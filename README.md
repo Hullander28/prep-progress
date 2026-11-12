@@ -43,7 +43,7 @@ Built from public-domain USDA FoodData Central data (CC0). Values are never inve
 
 The October 2026 Foundation CSV archive was incomplete (no `food.csv` / `food_nutrient.csv` / `food_portion.csv`), so April 2026 was used instead.
 
-If something isn’t in the offline list, search online (needs a connection). That lookup uses [Open Food Facts](https://world.openfoodfacts.org), a collaborative database under the Open Database License (ODbL), and caches matches on the phone. Barcode lookup uses the same source; camera scanning works in browsers that support the Barcode Detection API (typically Android Chrome). On iPhone Safari, type the number under the barcode.
+If something isn’t in the offline list, search online (needs a connection). That lookup uses [Open Food Facts](https://world.openfoodfacts.org), a collaborative database under the Open Database License (ODbL), and caches matches on the phone. Barcode lookup uses the same source. On phones that support the Barcode Detection API (typically Android Chrome) the live camera uses that. On iPhone Safari and the Home Screen app, the same camera preview is decoded with a bundled ZXing-js library (loaded the first time you open the scanner). If the live camera is blocked or doesn’t work in the Home Screen app, use **Take a photo of the barcode**, or type the number. The decoder is loaded the first time you open the scanner (then cached offline). UPC-A, EAN-13, and EAN-8 are the most reliable; short UPC-E codes may need a photo retry or typing the number.
 
 Rebuild (CSVs/JSON under `/tmp/usda`):
 
@@ -107,6 +107,7 @@ node tests/test_achievements.js
 node tests/test_sync.js
 node tests/test_foods.js
 node tests/test_catalog.js
+python3 tests/test_barcode_scan.py
 python3 tests/run_e2e.py
 ```
 

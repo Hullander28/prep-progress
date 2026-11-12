@@ -250,8 +250,15 @@ def run_chromium(browser, url, results):
     page.locator("[data-act='open-barcode']").first.click()
     page.wait_for_selector("#barcode-manual")
     assert page.locator("text=Look up barcode").first.is_visible()
+    assert page.locator("#start-camera-btn").first.is_visible()
+    assert page.locator("text=Take a photo of the barcode").first.is_visible()
+    assert page.locator("#barcode-photo").count()
+    assert page.locator("#barcode-photo-pick").count()
     results["barcode_sheet"] = True
-    page.locator("[data-act='close-sheet']").first.click()
+    results["barcode_photo"] = True
+    # The barcode sheet is tall enough that the center of the full-screen
+    # backdrop sits under the sheet; click the element directly instead.
+    page.evaluate("""() => document.querySelector('.backdrop[data-act="close-sheet"]').click()""")
     page.wait_for_timeout(150)
     page.locator("button.chip", has_text="All").click()
 

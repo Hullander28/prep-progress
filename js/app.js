@@ -1988,16 +1988,19 @@
     return sheet.q != null ? sheet.q : foodsQuery;
   }
   function sheetBarcode() {
-    const cat = window.PPCatalog || {};
-    const canDetect = cat.hasBarcodeDetector && cat.hasBarcodeDetector();
-    const canCam = cat.canUseCamera && cat.canUseCamera();
+    const scan = window.PPScan || {};
+    const canCam = scan.canUseCamera ? scan.canUseCamera() : !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
     let html = "<h2>Barcode</h2>";
-    html += '<p class="hint" style="margin-top:0">Look up a grocery product in the built-in list, or on Open Food Facts if you have a connection.</p>';
-    if (canDetect && canCam) {
-      html += '<div class="scan-wrap"><video id="barcode-video" playsinline autoplay muted></video><p class="tiny muted" id="scan-status">Point the camera at a barcode.</p></div>';
-    } else if (canCam && !canDetect) {
-      html += '<p class="note">Camera barcode scanning isn\'t available in this browser (common on iPhone Safari). Type the number under the barcode instead.</p>';
+    html += '<p class="hint" style="margin-top:0">Scan a grocery barcode, take a photo of it, or type the number. We’ll look it up in the built-in list, or on Open Food Facts if you have a connection.</p>';
+    if (canCam) {
+      html += '<div class="scan-wrap" id="scan-wrap"><video id="barcode-video" playsinline webkit-playsinline autoplay muted></video>';
+      html += '<p class="tiny muted" id="scan-status">' + esc((sheet && sheet.scanStatus) || "Point the camera at the barcode.") + "</p></div>";
+      html += '<button type="button" class="btn btn-ghost btn-block" data-act="start-camera" id="start-camera-btn">Start camera</button>';
+    } else {
+      html += '<p class="note">This browser can’t open a live camera. Take a photo of the barcode, or type the number under it.</p>';
     }
+    html += '<label class="btn btn-primary btn-block" style="margin-top:8px">Take a photo of the barcode<input type="file" id="barcode-photo" accept="image/*" capture="environment" hidden></label>';
+    html += '<label class="btn btn-ghost btn-block">Choose a photo<input type="file" id="barcode-photo-pick" accept="image/*" hidden></label>';
     html += '<label class="field">Barcode number<input id="barcode-manual" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 012000161519" value="' + esc((sheet && sheet.code) || "") + '"></label>';
     html += '<button class="btn btn-primary btn-block" data-act="lookup-barcode">Look up barcode</button>';
     if (sheet && sheet.barcodeError) html += '<p class="note" style="margin-top:10px">' + esc(sheet.barcodeError) + "</p>";
@@ -2654,7 +2657,16 @@
         }
       });
     }
-    if (sheet && sheet.type === "barcode") startBarcodeScan();
+    ["barcode-photo", "barcode-photo-pick"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        const file = el.files && el.files[0];
+        if (file) decodeBarcodePhoto(file);
+        el.value = "";
+      });
+    });
+    /* Camera starts only when the user taps Start camera (needed on iOS). */
   }
   function bindResults(box) {
     if (!box) return;
@@ -2681,7 +2693,18 @@
     saveState();
   }
 
+  function setScanStatus(msg) {
+    if (sheet && sheet.type === "barcode") sheet.scanStatus = msg || "";
+    const status = document.getElementById("scan-status");
+    if (status) status.textContent = msg || "";
+  }
+  function setScanWrapLive(on) {
+    const wrap = document.getElementById("scan-wrap");
+    if (wrap) wrap.classList.toggle("is-live", !!on);
+  }
   function stopBarcodeScan() {
+    setScanWrapLive(false);
+    if (window.PPScan && window.PPScan.stopVideo) window.PPScan.stopVideo();
     if (scanTimer) {
       clearTimeout(scanTimer);
       scanTimer = 0;
@@ -2695,45 +2718,61 @@
   }
   function startBarcodeScan() {
     stopBarcodeScan();
-    const cat = window.PPCatalog;
-    if (!cat || !cat.hasBarcodeDetector || !cat.hasBarcodeDetector() || !cat.canUseCamera()) return;
     const video = document.getElementById("barcode-video");
-    const status = document.getElementById("scan-status");
-    if (!video || !navigator.mediaDevices) return;
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
-      .then((stream) => {
-        if (!sheet || sheet.type !== "barcode") {
-          stream.getTracks().forEach((tr) => tr.stop());
+    const scan = window.PPScan;
+    if (!video || !scan || !scan.startVideo) return;
+    setScanWrapLive(true);
+    if (scan.prepareVideo) scan.prepareVideo(video);
+    scan.startVideo(video, {
+      onStatus: function (msg) {
+        setScanStatus(msg);
+      },
+      onCode: function (hit) {
+        if (!hit || !hit.text) return;
+        const input = document.getElementById("barcode-manual");
+        if (input) input.value = hit.text;
+        setScanStatus("Got it. Looking up " + hit.text + "…");
+        lookupBarcodeCode(hit.text);
+      },
+      onError: function (err) {
+        const msg = scan.permissionMessage ? scan.permissionMessage(err) : (err && err.message) || "Camera couldn’t start.";
+        setScanStatus(msg);
+        setScanWrapLive(false);
+        if (sheet && sheet.type === "barcode") sheet.barcodeError = "";
+        console.warn(err);
+      },
+    });
+  }
+  function decodeBarcodePhoto(file) {
+    const scan = window.PPScan;
+    if (!file) return;
+    setScanStatus("Reading photo…");
+    if (!scan || !scan.decodeBlob) {
+      if (sheet) sheet.barcodeError = "Photo scanning isn’t available right now. Type the number instead.";
+      render();
+      return;
+    }
+    scan
+      .decodeBlob(file)
+      .then(function (hit) {
+        if (hit && hit.text) {
+          const input = document.getElementById("barcode-manual");
+          if (input) input.value = hit.text;
+          setScanStatus("Got it from your photo. Looking up " + hit.text + "…");
+          lookupBarcodeCode(hit.text);
           return;
         }
-        scanStream = stream;
-        video.srcObject = stream;
-        const play = video.play();
-        if (play && play.catch) play.catch(function () {});
-        const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"] });
-        const tick = () => {
-          if (!sheet || sheet.type !== "barcode" || !scanStream) return;
-          detector
-            .detect(video)
-            .then((codes) => {
-              if (codes && codes.length && codes[0].rawValue) {
-                const input = document.getElementById("barcode-manual");
-                if (input) input.value = codes[0].rawValue;
-                lookupBarcodeCode(codes[0].rawValue);
-                return;
-              }
-              scanTimer = setTimeout(tick, 280);
-            })
-            .catch(() => {
-              scanTimer = setTimeout(tick, 500);
-            });
-        };
-        scanTimer = setTimeout(tick, 400);
+        if (sheet && sheet.type === "barcode") {
+          sheet.barcodeError = "No barcode found in that photo. Try a closer, well-lit shot of the bars, or type the number.";
+        }
+        setScanStatus("No barcode found in that photo.");
+        render();
       })
-      .catch((err) => {
-        if (status) status.textContent = "Camera unavailable. Type the barcode instead.";
-        console.warn(err);
+      .catch(function (err) {
+        if (sheet && sheet.type === "barcode") {
+          sheet.barcodeError = (err && err.message) || "Couldn’t read that photo. Try another, or type the number.";
+        }
+        render();
       });
   }
   function rememberFood(food) {
@@ -2898,6 +2937,9 @@
       stopBarcodeScan();
       sheet = { type: "barcode", code: "", barcodeError: "", returnTo: sheet && sheet.type === "log-food" ? "log-food" : "foods", meal: (sheet && sheet.meal) || "breakfast" };
       render();
+      return;
+    }
+    if (act === "start-camera") {
       startBarcodeScan();
       return;
     }
