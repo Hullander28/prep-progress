@@ -23,7 +23,7 @@ Then open `http://<your-computer-ip>:8080` on the phone (same Wi‑Fi). In Chrom
 - **Prep** — batch recipes with per-serving macros, then log servings to a day
 - **Foods** — search ~8,000 USDA foods with household portions; add/import your own
 - **Weight** — weigh-ins, trend chart, 7-day average, progress to goal
-- **Plan** — weekly weight milestones at a gentle pace, plus habit checkoffs
+- **Plan** — weekly weight milestones at the pace you pick, habit checkoffs, and awards
 - **You** (profile icon) — targets, units, light/dark theme, JSON backup import/export
 
 Calories use the Mifflin-St Jeor equation and a cautious pace (about ½–1% of body weight, capped near 1 lb/week), with a floor of ~1,500 kcal (men) / ~1,200 kcal (women). These are estimates, not medical advice.
@@ -48,6 +48,14 @@ python3 scripts/build_foods.py
 ```
 
 Import your own foods with `data/import-template.csv` (`name,serving_name,serving_grams,kcal,protein,carbs,fat` — values are for that serving).
+
+## Goal time frame
+
+In onboarding or **You**, pick a target date or a chip (8 / 12 / 16 / 24 / 36 / 52 weeks). The app estimates the weekly change and daily calorie adjustment, then labels the plan **Gentle**, **Moderate**, **Aggressive**, or **Too fast**. You can also pick a pace and we’ll suggest a date. If a plan is faster than about 1% of body weight per week (or 0.5% when gaining), or would push calories below a sensible floor (~1500 for men, ~1200 for women), you’ll get a recommended date you can apply in one tap. Faster plans add a couple of extra habits (steps, a bit more protein). These numbers are an estimate, not medical advice.
+
+## Awards
+
+The trophy in the header (and a section on **Plan**) opens streaks and badges. Logging, protein, weigh-in, and prep streaks show current and best. Badges cover firsts, 7/30/100-day logging streaks, progress toward your goal at a sustainable pace, weekly milestones, journal notes, and consistency levels/XP. Extreme deficits or too-fast weight change do not unlock goal awards. Unlocks are recomputed from your data (including after a backup import) and celebrate with a short toast — confetti is skipped when you prefer reduced motion.
 
 ## Color schemes
 
@@ -84,6 +92,7 @@ Any static host (Netlify, Cloudflare Pages, Render static) also works. It must b
 
 ```bash
 node tests/test_calc.js
+node tests/test_achievements.js
 node tests/test_foods.js
 python3 tests/run_e2e.py
 ```

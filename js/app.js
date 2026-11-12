@@ -29,6 +29,7 @@
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M7 7l10 10M17 7L7 17"/></svg>',
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/></svg>',
     journal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5h11.5A1.5 1.5 0 0 1 19 5v15.5H7.5A2.5 2.5 0 0 1 5 18V5.5A2 2 0 0 1 7 3.5z"/><path d="M5 18c0-1 .8-2 2.5-2H19"/><path d="M9 8h6M9 12h6"/></svg>',
+    trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5h8v3a4 4 0 0 1-8 0V5z"/><path d="M8 6H6.5A2.5 2.5 0 0 0 6.5 11C7.5 11 8 10 8.5 9"/><path d="M16 6h1.5A2.5 2.5 0 0 1 17.5 11C16.5 11 16 10 15.5 9"/><path d="M12 12v3"/><path d="M9 19h6"/><path d="M10 16h4v3"/></svg>',
     relog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 14-4.5"/><path d="M18 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 4.5"/><path d="M6 20v-4h4"/></svg>',
   };
 
@@ -70,6 +71,8 @@
   let sheet = null; // { type, ... }
   let toastTimer = 0;
   let toastMsg = "";
+  let pendingUnlocks = [];
+  let confettiOn = false;
   let onb = { step: 0, draft: emptyDraft() };
   let foodsQuery = "";
   let lastTab = "today";
@@ -85,6 +88,7 @@
       customFoods: [],
       plan: null,
       settings: { theme: "dark", palette: "midnight" },
+      achievements: { unlocked: {}, seen: {} },
       // Day journal notes live on each logs[date] record (note, hunger, mood, felt).
     };
   }
@@ -98,6 +102,10 @@
       activity: "moderate",
       goalWeight: "",
       weeklyLb: "",
+      goalWeeks: "",
+      goalDate: "",
+      intensity: "",
+      paceMode: "timeframe",
       calorieTarget: "",
       proteinG: "",
       carbsG: "",
@@ -117,6 +125,7 @@
         recipes: parsed.recipes || [],
         customFoods: parsed.customFoods || [],
         settings: Object.assign({ theme: "dark", palette: "midnight" }, parsed.settings || {}),
+        achievements: Object.assign({ unlocked: {}, seen: {} }, parsed.achievements || {}),
       });
     } catch (err) {
       console.warn("Could not read saved data", err);
@@ -321,11 +330,251 @@
     return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   }
   function fmtKcal(n) {
-    return C.round0(n).toLocaleString();
+    const v = C.round0(n);
+    return isFinite(v) ? v.toLocaleString() : "—";
   }
   function fmtG(n) {
     const v = C.round1(n);
+    if (!isFinite(v)) return "—";
     return Number.isInteger(v) ? String(v) : v.toFixed(1);
+  }
+
+  function habitsFor(intensity) {
+    const list = HABITS.map((h) => Object.assign({}, h));
+    if (intensity === "aggressive" || intensity === "too_fast") {
+      const protein = list.find((h) => h.id === "hit_protein");
+      if (protein) {
+        protein.target = 6;
+        protein.detail = "At least 6 days this week — protein is doing more work on a faster plan.";
+      }
+      const prep = list.find((h) => h.id === "prep_meals");
+      if (prep) {
+        prep.target = 3;
+        prep.label = "Prep three meals";
+        prep.detail = "A little more batch cooking helps an aggressive week.";
+      }
+      list.push({
+        id: "steps",
+        label: "Hit 7,000 steps",
+        detail: "Five days this week — movement supports a faster plan.",
+        manual: true,
+        target: 5,
+      });
+    }
+    return list;
+  }
+
+  function filledNum(n) {
+    if (n === "" || n == null || (typeof n === "string" && n.trim() === "")) return NaN;
+    const v = Number(n);
+    return isFinite(v) ? v : NaN;
+  }
+
+  function paceInput(obj) {
+    return {
+      sex: obj.sex,
+      age: filledNum(obj.age),
+      units: obj.units === "metric" ? "metric" : "us",
+      weight: filledNum(obj.weight),
+      height: filledNum(obj.height),
+      goalWeight: filledNum(obj.goalWeight),
+      activity: obj.activity || "moderate",
+      goalWeeks: obj.goalWeeks || undefined,
+      goalDate: obj.goalDate || undefined,
+      paceMode: obj.paceMode,
+      intensity: obj.intensity,
+      weeklyLb: obj.paceMode === "weekly" ? obj.weeklyLb : obj.weeklyLb,
+    };
+  }
+
+  function withPaceDefaults(obj) {
+    const o = Object.assign({}, obj);
+    const w = filledNum(o.weight);
+    const g = filledNum(o.goalWeight);
+    if (!isFinite(w) || !isFinite(g) || w <= 0 || g <= 0) return o;
+    if (o.goalWeeks || o.paceMode === "weekly" || o.goalDate) return o;
+    const tInit = C.computeTargets(
+      Object.assign(paceInput(o), { paceMode: "", goalWeeks: null, goalDate: null, weeklyLb: o.weeklyLb || undefined })
+    );
+    if (tInit && tInit.goalWeeks) {
+      o.goalWeeks = tInit.goalWeeks;
+      o.goalDate = tInit.goalDate;
+      o.paceMode = "timeframe";
+    }
+    return o;
+  }
+
+  function applyPaceTo(obj, kind, value) {
+    const src = withPaceDefaults(obj);
+    const t0 = C.computeTargets(paceInput(src));
+    if (!t0 || !t0.valid) return obj;
+    if (kind === "weeks") {
+      obj.goalWeeks = Number(value);
+      obj.paceMode = "timeframe";
+      obj.goalDate = C.dateFromWeeks(C.localISODate(), obj.goalWeeks);
+      obj.intensity = "";
+      obj.weeklyLb = C.weeklyFromWeeks(t0.weightLb, t0.goalLb, obj.goalWeeks);
+    } else if (kind === "date") {
+      const iso = C.isISODate(value) ? value : "";
+      if (!iso) return obj;
+      const wks = C.weeksBetween(C.localISODate(), iso);
+      if (wks <= 0 || wks > 520) return obj;
+      obj.goalDate = iso;
+      obj.paceMode = "timeframe";
+      obj.goalWeeks = Math.max(1, Math.round(wks * 10) / 10);
+      obj.intensity = "";
+      obj.weeklyLb = C.weeklyFromWeeks(t0.weightLb, t0.goalLb, obj.goalWeeks);
+    } else if (kind === "intensity") {
+      obj.intensity = value;
+      obj.paceMode = "intensity";
+      obj.weeklyLb = C.weeklyFromIntensity(t0.weightLb, t0.goalLb, value);
+      obj.goalWeeks = C.weeksFromWeekly(t0.weightLb, t0.goalLb, obj.weeklyLb);
+      obj.goalDate = obj.goalWeeks ? C.dateFromWeeks(C.localISODate(), obj.goalWeeks) : "";
+    } else if (kind === "recommended") {
+      const t = C.computeTargets(paceInput(src));
+      if (t.safeWeeks) {
+        obj.goalWeeks = t.safeWeeks;
+        obj.goalDate = t.safeDate;
+        obj.paceMode = "timeframe";
+        obj.weeklyLb = t.safeWeeklyLb;
+        obj.intensity = "";
+      }
+    }
+    return obj;
+  }
+
+  function fmtWeekly(t, weeklyLb) {
+    const w = weeklyLb != null ? weeklyLb : t.weeklyLb;
+    const sign = w > 0 ? "+" : "";
+    if (t.units === "metric") return sign + C.round1(C.lbToKg(w)) + " kg / week";
+    return sign + C.round1(w) + " lb / week";
+  }
+
+  function intensityBadge(t) {
+    if (!t) return "";
+    return '<span class="intensity-badge ' + t.intensity + '">' + esc(t.intensityLabel) + "</span>";
+  }
+
+  function pacePreviewCard(t, useOnb) {
+    if (!t || !t.valid) return "";
+    const recAttr = useOnb ? 'data-onb="recommended"' : 'data-act="pace-recommended"';
+    let html = '<div class="card pace-card">';
+    html += '<div class="row"><div>' + intensityBadge(t);
+    html += '<p class="soft" style="margin:8px 0 0">' + esc(t.intensityHint) + "</p></div></div>";
+    if (t.direction !== "maintain") {
+      html +=
+        '<p class="hint">About <strong>' +
+        fmtWeekly(t) +
+        "</strong> (" +
+        t.pctPerWeek +
+        "% of body weight) · " +
+        (t.calorieDelta >= 0 ? "+" : "") +
+        fmtKcal(t.calorieDelta) +
+        " kcal per day.</p>";
+      if (t.goalDate) {
+        html +=
+          '<p class="soft tiny">Target date ' +
+          prettyDate(t.goalDate) +
+          (t.goalWeeks ? " · " + t.goalWeeks + " weeks" : "") +
+          ".</p>";
+      }
+    } else {
+      html += '<p class="hint">Current and goal weight match, so this is a maintain plan.</p>';
+    }
+    if (t.intensity === "too_fast" && t.safeDate) {
+      html +=
+        '<div class="note">The earliest recommended date is <strong>' +
+        prettyDate(t.safeDate) +
+        "</strong> (~" +
+        t.safeWeeks +
+        ' weeks). <button class="btn-text" type="button" ' +
+        recAttr +
+        ">Use recommended pace</button></div>";
+    }
+    if (t.floored) {
+      html +=
+        '<div class="note">Calories were raised to a sensible floor (' +
+        t.floor +
+        " kcal), so the weekly pace may be a little slower than the date implies.</div>";
+    }
+    html += "</div>";
+    return html;
+  }
+
+  function renderPaceEditor(prefix, obj, useOnb) {
+    const attr = useOnb ? "data-onb" : "data-act";
+    const src = withPaceDefaults(obj);
+    const can = isFinite(filledNum(src.weight)) && isFinite(filledNum(src.goalWeight)) && isFinite(filledNum(src.age)) && filledNum(src.weight) > 0 && filledNum(src.goalWeight) > 0;
+    const t = can ? C.computeTargets(paceInput(src)) : null;
+    const weeksVal = src.goalWeeks || (t && t.goalWeeks) || "";
+    const dateVal = src.goalDate || (t && t.goalDate) || "";
+    let html = '<div class="pace-editor">';
+    html += '<div class="field-label" style="margin-top:14px">Goal time frame</div>';
+    html += '<p class="tiny muted" style="margin:4px 0 8px">Pick a target date or a number of weeks — we’ll suggest how intense the plan would be.</p>';
+    html += '<div class="chips week-chips">';
+    (C.WEEK_CHIPS || [8, 12, 16, 24, 36, 52]).forEach((w) => {
+      const on = Math.round(Number(weeksVal)) === w ? " on" : "";
+      html +=
+        '<button type="button" class="chip' +
+        on +
+        '" ' +
+        attr +
+        '="pace-weeks" data-weeks="' +
+        w +
+        '">' +
+        w +
+        " weeks</button>";
+    });
+    html += "</div>";
+    html +=
+      '<label class="field">Target date<input id="' +
+      prefix +
+      '-goal-date" type="date" value="' +
+      esc(dateVal) +
+      '" min="' +
+      C.localISODate() +
+      '"></label>';
+    html += '<div class="field-label">Or pick a pace</div>';
+    html += '<div class="chips intensity-chips">';
+    ["gentle", "moderate", "aggressive"].forEach((id) => {
+      const meta = C.INTENSITY_META[id];
+      const on = src.paceMode === "intensity" && src.intensity === id ? " on" : "";
+      html +=
+        '<button type="button" class="chip' +
+        on +
+        '" ' +
+        attr +
+        '="pace-intensity" data-id="' +
+        id +
+        '">' +
+        meta.label +
+        "</button>";
+    });
+    html += "</div>";
+    if (t && t.valid) html += pacePreviewCard(t, useOnb);
+    html += "</div>";
+    return html;
+  }
+
+  function convertDraftUnits(d, next) {
+    if (!d || d.units === next) {
+      if (d) d.units = next;
+      return d;
+    }
+    const w = Number(d.weight);
+    const h = Number(d.height);
+    const g = Number(d.goalWeight);
+    if (next === "metric") {
+      if (isFinite(w) && w !== 0) d.weight = C.round1(C.lbToKg(w));
+      if (isFinite(h) && h !== 0) d.height = C.round1(C.inToCm(h));
+      if (isFinite(g) && g !== 0) d.goalWeight = C.round1(C.lbToKg(g));
+    } else {
+      if (isFinite(w) && w !== 0) d.weight = C.round1(C.kgToLb(w));
+      if (isFinite(h) && h !== 0) d.height = C.round1(C.cmToIn(h));
+      if (isFinite(g) && g !== 0) d.goalWeight = C.round1(C.kgToLb(g));
+    }
+    d.units = next;
+    return d;
   }
 
   function toast(msg) {
@@ -468,6 +717,31 @@
   }
 
   /* ---------- Render ---------- */
+  function burstConfetti() {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    confettiOn = true;
+    setTimeout(() => {
+      confettiOn = false;
+      const el = document.querySelector(".confetti");
+      if (el) el.remove();
+    }, 2000);
+  }
+
+  function syncAchievements() {
+    if (!state.profile || !window.PPAchievements) return;
+    const res = window.PPAchievements.sync(state, { today: C.localISODate(), targets: targets() });
+    const prev = JSON.stringify(state.achievements || {});
+    state.achievements = res.achievements;
+    if (res.justUnlocked && res.justUnlocked.length) {
+      pendingUnlocks = pendingUnlocks.concat(res.justUnlocked);
+    }
+    if (JSON.stringify(state.achievements) !== prev) {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(state));
+      } catch (err) {}
+    }
+  }
+
   function render() {
     applyTheme();
     const root = document.getElementById("app");
@@ -483,7 +757,27 @@
       bindOnboarding();
       return;
     }
+    syncAchievements();
+    if (pendingUnlocks.length && !toastMsg) {
+      const u = pendingUnlocks.slice();
+      pendingUnlocks = [];
+      toastMsg =
+        u.length === 1 ? "Award unlocked: " + u[0].name : u.length + " awards unlocked";
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toastMsg = "";
+        render();
+      }, 3200);
+      burstConfetti();
+    }
     const showFab = tab === "today" || tab === "journal" || tab === "prep" || tab === "foods";
+    const confettiHtml = confettiOn
+      ? '<div class="confetti" aria-hidden="true">' +
+        Array.from({ length: 24 })
+          .map((_, i) => '<span class="c c' + (i % 6) + '" style="--i:' + i + '"></span>')
+          .join("") +
+        "</div>"
+      : "";
     root.innerHTML =
       '<div class="shell" data-tab="' +
       tab +
@@ -495,7 +789,8 @@
         ? '<button class="fab" data-act="fab" aria-label="Quick log a food">' + ICONS.plus + "</button>"
         : "") +
       (sheet ? renderSheet() : "") +
-      (toastMsg ? '<div class="toast" role="status">' + esc(toastMsg) + "</div>" : "");
+      (toastMsg ? '<div class="toast" role="status">' + esc(toastMsg) + "</div>" : "") +
+      confettiHtml;
     bindMain();
   }
 
@@ -528,6 +823,7 @@
     if (tab === "foods") return renderFoods();
     if (tab === "weight") return renderWeight();
     if (tab === "plan") return renderPlan();
+    if (tab === "awards") return renderAwards();
     return renderProfile();
   }
 
@@ -560,7 +856,11 @@
     render();
   }
   function topbar(title, sub, extra) {
-    const back = tab === "profile";
+    const back = tab === "profile" || tab === "awards";
+    const awardsBtn =
+      tab === "awards" || tab === "profile"
+        ? ""
+        : '<button class="icon-btn" data-act="goto-awards" aria-label="Awards and streaks">' + ICONS.trophy + "</button>";
     return (
       '<div class="topbar"><div><h1>' +
       title +
@@ -568,6 +868,7 @@
       (sub ? '<div class="sub">' + sub + "</div>" : "") +
       '</div><div class="topbar-actions">' +
       (extra || "") +
+      awardsBtn +
       (back
         ? '<button class="icon-btn" data-act="back-tab" aria-label="Back">' + ICONS.back + "</button>"
         : '<button class="icon-btn" data-act="goto-profile" aria-label="Profile and settings">' +
@@ -981,6 +1282,68 @@
   }
 
   /* ---------- Plan ---------- */
+  function awardsTeaser() {
+    if (!window.PPAchievements) return "";
+    const snap = window.PPAchievements.compute(state, { today: C.localISODate(), targets: targets() });
+    const unlocked = snap.badges.filter((b) => b.unlocked).length;
+    const log = snap.streaks.logging;
+    let html = '<div class="card awards-teaser">';
+    html += '<div class="row"><div><h2 style="margin:0">Awards</h2>';
+    html += '<p class="soft tiny" style="margin:4px 0 0">Level ' + snap.level + " · " + unlocked + " of " + snap.badges.length + " badges · logging streak " + log.current + "</p></div>";
+    html += '<button class="btn btn-ghost" data-act="goto-awards">See all</button></div></div>';
+    return html;
+  }
+
+  function renderAwards() {
+    const A = window.PPAchievements;
+    if (!A) return topbar("Awards", "Streaks and badges.") + '<p class="muted">Awards are unavailable right now.</p>';
+    const snap = A.compute(state, { today: C.localISODate(), targets: targets() });
+    const dates = (state.achievements && state.achievements.unlocked) || {};
+    let html = topbar("Awards", "Consistency earns the badges — never crash diets.");
+    html += '<div class="card level-card">';
+    html += '<div class="row"><div><div class="muted tiny">Level</div><div class="val" style="font-size:2rem;font-weight:750">' + snap.level + "</div></div>";
+    html += '<div class="soft tiny">' + snap.xp.toLocaleString() + " XP from logging, protein, weigh-ins, prep, and notes — not from losing weight quickly.</div></div>";
+    const pct = snap.levelNeed ? Math.min(100, (snap.levelInto / snap.levelNeed) * 100) : 0;
+    html += '<div class="bar" style="margin-top:10px"><span style="width:' + pct + '%;background:var(--accent)"></span></div>';
+    html += '<div class="tiny muted">' + snap.levelInto + " / " + snap.levelNeed + " XP to level " + (snap.level + 1) + "</div></div>";
+
+    html += '<div class="card"><h2>Streaks</h2><div class="streak-grid">';
+    const rows = [
+      ["Logging", snap.streaks.logging, "Days with at least one food logged."],
+      ["Protein", snap.streaks.protein, "Days you hit your protein target."],
+      ["Weigh-in", snap.streaks.weighIn, "Weeks with at least one weigh-in."],
+      ["Prep", snap.streaks.prep, "Weeks you prepped or logged a recipe."],
+    ];
+    rows.forEach((row) => {
+      html += '<div class="streak"><div class="name">' + row[0] + '</div>';
+      html += '<div class="val">' + row[1].current + '</div>';
+      html += '<div class="meta">Best ' + row[1].best + "</div>";
+      html += '<div class="tiny muted">' + row[2] + "</div></div>";
+    });
+    html += "</div></div>";
+
+    html += '<div class="card"><h2>Badge case</h2><div class="badge-grid">';
+    snap.badges.forEach((b) => {
+      const on = b.unlocked ? " unlocked" : " locked";
+      const when = b.unlocked && dates[b.id] ? prettyDate(dates[b.id]) : "";
+      const frac = b.total ? Math.min(100, (b.progress / b.total) * 100) : 0;
+      html += '<div class="badge' + on + '">';
+      html += '<div class="badge-icon">' + A.badgeSvg(b.icon, b.unlocked) + "</div>";
+      html += '<div class="name">' + esc(b.name) + "</div>";
+      html += '<div class="meta">' + esc(b.detail) + "</div>";
+      if (!b.unlocked) {
+        html += '<div class="bar"><span style="width:' + frac + '%"></span></div>';
+        if (b.total > 1) html += '<div class="tiny muted">' + Math.min(b.total, Math.floor(b.progress)) + " / " + b.total + "</div>";
+      } else if (when) {
+        html += '<div class="tiny muted">Unlocked ' + when + "</div>";
+      }
+      html += "</div>";
+    });
+    html += "</div>";
+    html += '<p class="disclaimer" style="margin-top:12px">Awards celebrate consistency and healthy habits. Extreme deficits or too-fast weight change do not unlock goal badges. This is encouragement, not a medical assessment.</p></div>';
+    return html;
+  }
+
   function renderPlan() {
     if (!state.plan || !state.plan.weeks || !state.plan.weeks.length) {
       state.plan = buildPlan(C.localISODate(), targets() && targets().weightLb);
@@ -990,7 +1353,34 @@
     const unit = unitLabel("w");
     const idx = currentWeekIndex();
     const drift = planDrift();
-    let html = topbar("Small steps", t && t.direction === "maintain" ? "Habits to keep you steady." : "A gentle weekly path to your goal.");
+    const habits = habitsFor(t && t.intensity);
+    let html = topbar("Small steps", t && t.direction === "maintain" ? "Habits to keep you steady." : "A weekly path sized to the pace you picked.");
+    if (t) {
+      html += '<div class="card pace-card">' + intensityBadge(t);
+      const paceLb = Math.abs(t.floored || t.capped ? t.impliedWeeklyLb : t.weeklyLb);
+      const paceDisp = t.units === "metric" ? C.round1(C.lbToKg(paceLb)) : C.round1(paceLb);
+      const paceUnit = t.units === "metric" ? "kg" : "lb";
+      html +=
+        '<p style="margin:8px 0 0" class="soft">About <strong>' +
+        paceDisp +
+        " " +
+        paceUnit +
+        "</strong> a week" +
+        (t.goalWeeks ? " · " + t.goalWeeks + " weeks" : t.weeksToGoal ? " · roughly " + Math.ceil(t.weeksToGoal / 7) + " weeks" : "") +
+        (t.goalDate ? " · " + prettyDate(t.goalDate) : "") +
+        ".</p>";
+      html += '<p class="tiny muted" style="margin:6px 0 0">' + esc(t.intensityHint) + "</p>";
+      if (t.intensity === "too_fast" && t.safeDate) {
+        html +=
+          '<div class="note" style="margin-top:10px">This date is faster than recommended. Earliest safer date: ' +
+          prettyDate(t.safeDate) +
+          '. <button class="btn-text" type="button" data-act="pace-recommended">Use recommended pace</button></div>';
+      }
+      html += '<button class="btn btn-ghost btn-block" style="margin-top:10px" data-act="goto-profile">Adjust time frame</button></div>';
+    }
+
+    html += awardsTeaser();
+
     if (drift && drift.kind !== "on") {
       html +=
         '<div class="note ' +
@@ -1003,19 +1393,6 @@
     } else if (drift && drift.kind === "on") {
       html += '<div class="note sage">You’re right about on pace. Keep the small steps going.</div>';
     }
-    if (t) {
-      const paceLb = Math.abs(t.floored ? t.impliedWeeklyLb : t.weeklyLb);
-      const paceDisp = t.units === "metric" ? C.round1(C.lbToKg(paceLb)) : paceLb;
-      const paceUnit = t.units === "metric" ? "kg" : "lb";
-      html +=
-        '<div class="card"><p style="margin:0" class="soft">About <strong>' +
-        paceDisp +
-        " " +
-        paceUnit +
-        "</strong> a week" +
-        (t.weeksToGoal ? " · roughly " + Math.ceil(t.weeksToGoal / 7) + " weeks" : "") +
-        ".</p></div>";
-    }
 
     const weeks = state.plan.weeks;
     weeks.forEach((w, i) => {
@@ -1025,7 +1402,7 @@
       html += '<div class="row"><div><div class="pill">' + (current ? "This week" : "Week " + (i + 1)) + "</div>";
       html += '<div class="soft" style="margin-top:6px">' + prettyDate(w.start) + " – " + prettyDate(C.addDaysISO(w.start, 6)) + "</div></div>";
       html += '<div class="kcal">→ ' + displayWeight(w.targetWeight) + " " + unit + "</div></div>";
-      HABITS.forEach((h) => {
+      habits.forEach((h) => {
         let done = 0;
         let target = h.target;
         if (h.auto === "fullDays") done = prog.fullDays;
@@ -1055,6 +1432,7 @@
       html += "</div>";
     });
     html += '<button class="btn btn-ghost btn-block" style="margin-top:12px" data-act="recalc-plan">Recalculate from latest weight</button>';
+    html += '<p class="disclaimer" style="margin-top:14px">Weekly targets are an estimate, not medical advice.</p>';
     return html;
   }
 
@@ -1076,6 +1454,7 @@
     html += '<div class="field" style="margin-top:12px">Units<div class="segmented" style="margin-top:6px">';
     html += '<button type="button" class="' + (p.units !== "metric" ? "on" : "") + '" data-act="units" data-u="us">lb / in</button>';
     html += '<button type="button" class="' + (p.units === "metric" ? "on" : "") + '" data-act="units" data-u="metric">kg / cm</button></div></div>';
+    html += renderPaceEditor("p", p, false);
     html += '<button class="btn btn-primary btn-block" style="margin-top:14px" data-act="save-profile">Update &amp; refresh targets</button></div>';
 
     if (t) {
@@ -1182,9 +1561,10 @@
       body += "</div>";
       body += '<div class="btn-row" style="margin-top:20px"><button class="btn btn-ghost" data-onb="back">Back</button><button class="btn btn-primary" data-onb="next">Continue</button></div>';
     } else if (s === 2) {
-      body += "<h1>Where you’re headed</h1><p class=\"lede\">We’ll suggest a gentle pace — about ½ to 1% of body weight, capped near a pound a week.</p>";
+      body += "<h1>Where you’re headed</h1><p class=\"lede\">Set a goal weight and a time frame. We’ll show how intense that plan would feel — you can always pick a gentler pace.</p>";
       body += '<label class="field" style="margin-top:16px">Activity level<select id="o-activity">' + activityOptions(d.activity) + "</select></label>";
       body += field("Goal weight (" + (d.units === "metric" ? "kg" : "lb") + ")", "o-goal", d.goalWeight, "number");
+      body += renderPaceEditor("o", d, true);
       body += '<div class="btn-row" style="margin-top:20px"><button class="btn btn-ghost" data-onb="back">Back</button><button class="btn btn-primary" data-onb="next">See my plan</button></div>';
     } else {
       const preview = previewTargets();
@@ -1194,10 +1574,17 @@
       } else {
         const t = preview;
         body += '<div class="card" style="margin:12px 0"><div class="row"><div><div class="muted tiny">Daily calories</div><div class="val" style="font-size:2rem;font-weight:750;letter-spacing:-0.03em">' + fmtKcal(t.calorieTarget) + "</div></div><div class=\"soft tiny\">P " + t.proteinG + " · C " + t.carbsG + " · F " + t.fatG + "</div></div>";
-        body += '<p class="hint">Estimated burn ' + fmtKcal(t.tdee) + " kcal · weekly change " + t.weeklyLb + " " + (d.units === "metric" ? "kg at input, stored carefully" : "lb") + ".</p>";
+        body += '<div style="margin-top:10px">' + intensityBadge(t) + "</div>";
+        body += '<p class="hint">Estimated burn ' + fmtKcal(t.tdee) + " kcal · " + fmtWeekly(t, t.weeklyDisplayLb != null ? t.weeklyDisplayLb : t.weeklyLb) + (t.calorieDelta ? " · " + (t.calorieDelta >= 0 ? "+" : "") + fmtKcal(t.calorieDelta) + " kcal/day" : "") + ".</p>";
+        if (t.goalDate) body += '<p class="soft tiny">Target date ' + prettyDate(t.goalDate) + (t.goalWeeks ? " · " + t.goalWeeks + " weeks" : "") + ".</p>";
+        body += '<p class="soft tiny">' + esc(t.intensityHint) + "</p>";
+        if (t.intensity === "too_fast" && t.safeDate) {
+          body += '<div class="note">The earliest recommended date is ' + prettyDate(t.safeDate) + '. <button class="btn-text" type="button" data-onb="recommended">Use recommended pace</button></div>';
+        }
         if (t.floored) body += '<div class="note">We kept calories at a sensible floor (' + t.floor + " kcal). The weekly pace may be slower, and that’s okay.</div>";
         body += "</div>";
-        body += '<p class="disclaimer">This is an estimate, not medical advice. It uses the Mifflin-St Jeor equation and a cautious pace.</p>';
+        body += renderPaceEditor("o", d, true);
+        body += '<p class="disclaimer">This is an estimate, not medical advice. It uses the Mifflin-St Jeor equation and a cautious pace. Talk with a clinician if you have a health condition, are pregnant, or have a history of disordered eating.</p>';
       }
       body += '<div class="btn-row" style="margin-top:20px"><button class="btn btn-ghost" data-onb="back">Back</button><button class="btn btn-primary" data-onb="finish">Let’s go</button></div>';
     }
@@ -1218,29 +1605,25 @@
   }
   function previewTargets() {
     const d = onb.draft;
-    if (!d.age || !d.sex || !d.weight || !d.height || !d.goalWeight) return { error: "Please fill in age, sex, height, weight, and a goal." };
-    const weekly = C.suggestedWeeklyLb(
-      d.units === "metric" ? C.kgToLb(d.weight) : Number(d.weight),
-      d.units === "metric" ? C.kgToLb(d.goalWeight) : Number(d.goalWeight)
-    );
-    // If metric, suggestedWeeklyLb is in lb. Convert for display later. Store weeklyLb in the same unit as profile weight.
-    const weeklyInProfile = d.units === "metric" ? C.round1(C.lbToKg(weekly)) : weekly;
+    const err = C.validateStats({
+      age: d.age,
+      weight: d.weight,
+      height: d.height,
+      goalWeight: d.goalWeight,
+      units: d.units,
+    });
+    if (!d.sex) return { error: "Please choose a sex so we can estimate energy needs." };
+    if (err) return { error: err };
+    if (!d.age || !d.weight || !d.height || !d.goalWeight) return { error: "Please fill in age, sex, height, weight, and a goal." };
+    const src = withPaceDefaults(d);
     try {
-      const t = C.computeTargets({
-        sex: d.sex,
-        age: Number(d.age),
-        units: d.units,
-        weight: Number(d.weight),
-        height: Number(d.height),
-        goalWeight: Number(d.goalWeight),
-        activity: d.activity,
-        weeklyLb: weekly,
-      });
-      t.weeklyDisplay = weeklyInProfile;
-      d.weeklyLb = weekly; // always store pace in lb internally? Mixed. Profile weeklyLb should match computeTargets which expects lb if we always convert...
-      // computeTargets uses profile.weeklyLb as lb ALWAYS? Look at calc.js:
-      // weeklyLb = Number(profile.weeklyLb) used as lb in (weeklyLb * 3500)/7
-      // Yes it's in pounds. We'll store weeklyLb in pounds internally, display converted.
+      const t = C.computeTargets(paceInput(src));
+      t.weeklyDisplay = t.units === "metric" ? C.round1(C.lbToKg(t.weeklyLb)) : t.weeklyLb;
+      t.weeklyDisplayLb = t.weeklyLb;
+      d.weeklyLb = t.weeklyLb;
+      d.goalWeeks = t.goalWeeks;
+      d.goalDate = t.goalDate;
+      if (!d.paceMode) d.paceMode = "timeframe";
       return t;
     } catch (e) {
       return { error: "Could not compute targets. Check the numbers." };
@@ -1252,7 +1635,25 @@
         const act = btn.getAttribute("data-onb");
         if (act === "units") {
           readOnb();
-          onb.draft.units = btn.getAttribute("data-u");
+          convertDraftUnits(onb.draft, btn.getAttribute("data-u"));
+          render();
+          return;
+        }
+        if (act === "pace-weeks") {
+          readOnb();
+          applyPaceTo(onb.draft, "weeks", btn.getAttribute("data-weeks"));
+          render();
+          return;
+        }
+        if (act === "pace-intensity") {
+          readOnb();
+          applyPaceTo(onb.draft, "intensity", btn.getAttribute("data-id"));
+          render();
+          return;
+        }
+        if (act === "recommended") {
+          readOnb();
+          applyPaceTo(onb.draft, "recommended");
           render();
           return;
         }
@@ -1265,14 +1666,35 @@
         if (act === "next") {
           readOnb();
           if (onb.step === 1) {
-            if (!onb.draft.age || !onb.draft.sex || !onb.draft.weight || !onb.draft.height) {
+            if (!onb.draft.sex) {
               toast("Age, sex, height, and weight help us estimate energy.");
+              return;
+            }
+            const err1 = C.validateStats({
+              age: onb.draft.age,
+              weight: onb.draft.weight,
+              height: onb.draft.height,
+              units: onb.draft.units,
+            });
+            if (err1) {
+              toast(err1);
               return;
             }
           }
           if (onb.step === 2) {
             if (!onb.draft.goalWeight) {
               toast("Add a goal weight — even a small one.");
+              return;
+            }
+            const err2 = C.validateStats({
+              age: onb.draft.age,
+              weight: onb.draft.weight,
+              height: onb.draft.height,
+              goalWeight: onb.draft.goalWeight,
+              units: onb.draft.units,
+            });
+            if (err2) {
+              toast(err2);
               return;
             }
           }
@@ -1297,6 +1719,10 @@
             goalWeight: Number(d.goalWeight),
             activity: d.activity,
             weeklyLb: t.weeklyLb,
+            goalWeeks: t.goalWeeks || d.goalWeeks || "",
+            goalDate: t.goalDate || d.goalDate || "",
+            intensity: t.intensity || d.intensity || "",
+            paceMode: d.paceMode || "timeframe",
             manualCalories: false,
             manualMacros: false,
             startedOn: C.localISODate(),
@@ -1313,6 +1739,29 @@
         }
       });
     });
+    const dateEl = document.getElementById("o-goal-date");
+    if (dateEl) {
+      dateEl.addEventListener("change", () => {
+        readOnb();
+        if (dateEl.value === onb.draft.goalDate) return;
+        applyPaceTo(onb.draft, "date", dateEl.value);
+        render();
+      });
+    }
+    const goalEl = document.getElementById("o-goal");
+    if (goalEl) {
+      goalEl.addEventListener("change", () => {
+        readOnb();
+        render();
+      });
+    }
+    const actEl = document.getElementById("o-activity");
+    if (actEl) {
+      actEl.addEventListener("change", () => {
+        readOnb();
+        render();
+      });
+    }
   }
 
   /* ---------- Sheets ---------- */
@@ -1422,22 +1871,32 @@
       });
     }
     html += '<button class="btn btn-primary btn-block" data-act="pick-food" data-id="' + esc(f.id) + '">Log this food</button>';
-    if (f.custom) html += '<button class="btn btn-danger btn-block" data-act="delete-custom" data-id="' + esc(f.id) + '">Remove custom food</button>';
+    if (f.custom) {
+      html += '<button class="btn btn-ghost btn-block" data-act="edit-custom" data-id="' + esc(f.id) + '">Edit food</button>';
+      html += '<button class="btn btn-danger btn-block" data-act="delete-custom" data-id="' + esc(f.id) + '">Remove custom food</button>';
+    }
     return html;
   }
   function sheetAddCustom() {
+    const existing = sheet.foodId ? (state.customFoods || []).find((f) => f.id === sheet.foodId) : null;
+    const serving = existing && existing.portions && existing.portions[0] ? existing.portions[0] : { name: "1 serving", grams: 100 };
+    const per = existing ? Number(serving.grams) / 100 : 1;
+    const kcal = existing ? C.round0(existing.kcal * per) : "";
+    const pro = existing ? C.round1(existing.protein * per) : "";
+    const carb = existing ? C.round1(existing.carbs * per) : "";
+    const fat = existing ? C.round1(existing.fat * per) : "";
     return (
-      "<h2>Custom food</h2><p class=\"hint\" style=\"margin-top:0\">Enter values for one serving. We’ll store them per 100 g so portions stay consistent.</p>" +
-      '<label class="field">Name<input id="c-name" placeholder="Sunday chili"></label>' +
-      '<div class="grid-2"><label class="field">Serving name<input id="c-sname" placeholder="1 bowl" value="1 serving"></label>' +
-      '<label class="field">Serving grams<input id="c-grams" type="number" inputmode="decimal" value="100"></label></div>' +
+      "<h2>" + (existing ? "Edit custom food" : "Custom food") + "</h2><p class=\"hint\" style=\"margin-top:0\">Enter values for one serving. We’ll store them per 100 g so portions stay consistent.</p>" +
+      '<label class="field">Name<input id="c-name" placeholder="Sunday chili" value="' + esc(existing ? existing.name : "") + '"></label>' +
+      '<div class="grid-2"><label class="field">Serving name<input id="c-sname" placeholder="1 bowl" value="' + esc(serving.name || "1 serving") + '"></label>' +
+      '<label class="field">Serving grams<input id="c-grams" type="number" inputmode="decimal" value="' + esc(serving.grams || 100) + '"></label></div>' +
       '<div class="grid-2">' +
-      field("kcal", "c-kcal", "", "number") +
-      field("Protein (g)", "c-pro", "", "number") +
-      field("Carbs (g)", "c-carb", "", "number") +
-      field("Fat (g)", "c-fat", "", "number") +
+      field("kcal", "c-kcal", kcal, "number") +
+      field("Protein (g)", "c-pro", pro, "number") +
+      field("Carbs (g)", "c-carb", carb, "number") +
+      field("Fat (g)", "c-fat", fat, "number") +
       "</div>" +
-      '<button class="btn btn-primary btn-block" data-act="save-custom">Save food</button>'
+      '<button class="btn btn-primary btn-block" data-act="save-custom">' + (existing ? "Save changes" : "Save food") + "</button>"
     );
   }
   function sheetImportFoods() {
@@ -1479,7 +1938,8 @@
         html += '<div class="note">Add ' + esc(displayName(f.name)) + ' · grams <input id="r-grams" type="number" value="' + (f.portions && f.portions[0] ? f.portions[0].grams : 100) + '" style="width:90px;min-height:40px;display:inline-block"> <button class="btn btn-primary" data-act="r-add-confirm" data-id="' + f.id + '">Add</button></div>';
       }
     }
-    const per = C.recipePerServing(r.items || [], Number(r.servings) || 1);
+    const per = C.recipePerServing(r.items || [], Number(r.servings));
+    if (per.invalid) html += '<div class="note">Enter a serving count greater than zero.</div>';
     html += '<p class="soft">Per serving: ' + fmtKcal(per.kcal) + " kcal · " + fmtG(per.protein) + "P · " + fmtG(per.carbs) + "C · " + fmtG(per.fat) + "F</p>";
     html += '<button class="btn btn-primary btn-block" data-act="save-recipe">Save recipe</button>';
     if (r.id) html += '<button class="btn btn-danger btn-block" data-act="delete-recipe">Delete recipe</button>';
@@ -1614,7 +2074,7 @@
     return JSON.stringify(
       {
         app: "Prep & Progress",
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         profile: state.profile,
         logs: state.logs,
@@ -1623,6 +2083,7 @@
         customFoods: state.customFoods,
         plan: state.plan,
         settings: state.settings,
+        achievements: state.achievements,
       },
       null,
       2
@@ -1685,6 +2146,7 @@
     next.customFoods = obj.customFoods || [];
     next.plan = obj.plan || null;
     next.settings = Object.assign({ theme: "dark", palette: "midnight" }, obj.settings || {});
+    next.achievements = Object.assign({ unlocked: {}, seen: {} }, obj.achievements || {});
     state = next;
     saveState();
   }
@@ -1724,16 +2186,23 @@
     }
     let added = 0;
     rows.forEach((r) => {
-      if (!r.name || !r.serving_grams) return;
-      const per = 100 / r.serving_grams;
+      const name = (r.name || "").trim();
+      const grams = Number(r.serving_grams);
+      const kcal = Number(r.kcal);
+      const protein = Number(r.protein);
+      const carbs = Number(r.carbs);
+      const fat = Number(r.fat);
+      if (!name || !isFinite(grams) || grams <= 0) return;
+      if (![kcal, protein, carbs, fat].every((n) => isFinite(n) && n >= 0)) return;
+      const per = 100 / grams;
       state.customFoods.push({
         id: uid("c"),
-        name: r.name,
-        kcal: C.round1(r.kcal * per),
-        protein: C.round1(r.protein * per),
-        carbs: C.round1(r.carbs * per),
-        fat: C.round1(r.fat * per),
-        portions: [[r.serving_name || "1 serving", C.round1(r.serving_grams)]].map((p) => ({ name: p[0], grams: p[1] })),
+        name: name,
+        kcal: C.round1(kcal * per),
+        protein: C.round1(protein * per),
+        carbs: C.round1(carbs * per),
+        fat: C.round1(fat * per),
+        portions: [{ name: r.serving_name || "1 serving", grams: C.round1(grams) }],
         custom: true,
       });
       added++;
@@ -1787,6 +2256,30 @@
           bindResults(box);
         }
         sheetQ.focus();
+      });
+    }
+    const pDate = document.getElementById("p-goal-date");
+    if (pDate) {
+      pDate.addEventListener("change", () => {
+        const p = state.profile;
+        ["p-age", "p-weight", "p-height", "p-goal"].forEach((id) => {
+          const eln = document.getElementById(id);
+          if (!eln) return;
+          const key = { "p-age": "age", "p-weight": "weight", "p-height": "height", "p-goal": "goalWeight" }[id];
+          p[key] = Number(eln.value);
+        });
+        if (document.getElementById("p-sex")) p.sex = document.getElementById("p-sex").value;
+        if (document.getElementById("p-activity")) p.activity = document.getElementById("p-activity").value;
+        if (pDate.value === p.goalDate) return;
+        applyPaceTo(p, "date", pDate.value);
+        render();
+      });
+    }
+    const pGoal = document.getElementById("p-goal");
+    if (pGoal && tab === "profile") {
+      pGoal.addEventListener("change", () => {
+        state.profile.goalWeight = Number(pGoal.value);
+        render();
       });
     }
     const jdate = document.getElementById("journal-date");
@@ -1899,6 +2392,12 @@
       render();
       return;
     }
+    if (act === "goto-awards") {
+      lastTab = tab === "awards" ? lastTab : tab;
+      tab = "awards";
+      render();
+      return;
+    }
     if (act === "fab") {
       const mealGuess = (function () {
         const h = new Date().getHours();
@@ -1954,9 +2453,7 @@
       return;
     }
     if (act === "cal-prev" || act === "cal-next") {
-      const d = new Date(journalCursor + "T12:00:00");
-      d.setMonth(d.getMonth() + (act === "cal-next" ? 1 : -1));
-      journalCursor = C.toISODate(d);
+      journalCursor = C.addMonthsISO(journalCursor, act === "cal-next" ? 1 : -1);
       dayISO = journalCursor;
       render();
       return;
@@ -2089,21 +2586,42 @@
       render();
       return;
     }
+    if (act === "edit-custom") {
+      sheet = { type: "add-custom", foodId: el.getAttribute("data-id") };
+      render();
+      return;
+    }
     if (act === "save-custom") {
       const name = (document.getElementById("c-name").value || "").trim();
       const grams = Number(document.getElementById("c-grams").value || 0);
-      if (!name || !grams) return toast("Name and serving grams are needed.");
+      if (!name || !isFinite(grams) || grams <= 0) return toast("Name and serving grams are needed.");
+      const kcal = Number(document.getElementById("c-kcal").value);
+      const protein = Number(document.getElementById("c-pro").value);
+      const carbs = Number(document.getElementById("c-carb").value);
+      const fat = Number(document.getElementById("c-fat").value);
+      if (![kcal, protein, carbs, fat].every((n) => isFinite(n) && n >= 0)) {
+        return toast("Enter calorie and macro values of zero or more.");
+      }
       const per = 100 / grams;
-      const food = {
-        id: uid("c"),
+      const payload = {
         name: name,
-        kcal: C.round1(Number(document.getElementById("c-kcal").value || 0) * per),
-        protein: C.round1(Number(document.getElementById("c-pro").value || 0) * per),
-        carbs: C.round1(Number(document.getElementById("c-carb").value || 0) * per),
-        fat: C.round1(Number(document.getElementById("c-fat").value || 0) * per),
+        kcal: C.round1(kcal * per),
+        protein: C.round1(protein * per),
+        carbs: C.round1(carbs * per),
+        fat: C.round1(fat * per),
         portions: [{ name: document.getElementById("c-sname").value || "1 serving", grams: C.round1(grams) }],
         custom: true,
       };
+      if (sheet.foodId) {
+        const i = state.customFoods.findIndex((f) => f.id === sheet.foodId);
+        if (i >= 0) state.customFoods[i] = Object.assign({}, state.customFoods[i], payload);
+        saveState();
+        sheet = { type: "food-detail", foodId: sheet.foodId };
+        toast("Custom food updated.");
+        render();
+        return;
+      }
+      const food = Object.assign({ id: uid("c") }, payload);
       state.customFoods.push(food);
       saveState();
       sheet = { type: "log-amount", foodId: food.id, meal: "breakfast", time: nowTime() };
@@ -2131,6 +2649,7 @@
     }
     if (act === "edit-recipe") {
       const r = state.recipes.find((x) => x.id === el.getAttribute("data-id"));
+      if (!r) return toast("That recipe is no longer in your list.");
       sheet = { type: "recipe-edit", recipe: JSON.parse(JSON.stringify(r)), q: "" };
       render();
       return;
@@ -2182,8 +2701,10 @@
     if (act === "save-recipe") {
       const r = sheet.recipe;
       r.name = (document.getElementById("r-name").value || "").trim() || "Untitled prep";
-      r.servings = Number(document.getElementById("r-servings").value || 1);
+      r.servings = Number(document.getElementById("r-servings").value);
+      if (!isFinite(r.servings) || r.servings <= 0) return toast("Enter a serving count greater than zero.");
       if (!r.items || !r.items.length) return toast("Add at least one ingredient.");
+      if (!r.createdOn) r.createdOn = C.localISODate();
       if (r.id) {
         const i = state.recipes.findIndex((x) => x.id === r.id);
         if (i >= 0) state.recipes[i] = r;
@@ -2210,9 +2731,12 @@
     }
     if (act === "confirm-log-recipe") {
       const r = state.recipes.find((x) => x.id === sheet.recipeId);
+      if (!r) return toast("That recipe is no longer in your list.");
       const qty = Number(document.getElementById("s-qty").value || 1);
+      if (!isFinite(qty) || qty <= 0) return toast("Enter a serving amount greater than zero.");
       const meal = document.getElementById("s-meal").value;
-      const per = C.recipePerServing(r.items || [], r.servings || 1);
+      const per = C.recipePerServing(r.items || [], r.servings);
+      if (per.invalid) return toast("This recipe needs a serving count greater than zero.");
       const targetDay = tab === "journal" ? journalCursor : dayISO;
       addEntry(targetDay, meal, {
         id: uid("e"),
@@ -2268,6 +2792,23 @@
       render();
       return;
     }
+    if (act === "pace-weeks" || act === "pace-intensity" || act === "pace-recommended") {
+      const p = state.profile;
+      if (!p) return;
+      ["p-age", "p-weight", "p-height", "p-goal"].forEach((id) => {
+        const eln = document.getElementById(id);
+        if (!eln) return;
+        const key = { "p-age": "age", "p-weight": "weight", "p-height": "height", "p-goal": "goalWeight" }[id];
+        p[key] = Number(eln.value);
+      });
+      if (document.getElementById("p-sex")) p.sex = document.getElementById("p-sex").value;
+      if (document.getElementById("p-activity")) p.activity = document.getElementById("p-activity").value;
+      if (act === "pace-weeks") applyPaceTo(p, "weeks", el.getAttribute("data-weeks"));
+      else if (act === "pace-intensity") applyPaceTo(p, "intensity", el.getAttribute("data-id"));
+      else applyPaceTo(p, "recommended");
+      render();
+      return;
+    }
     if (act === "recalc-plan") {
       const t = targets();
       const latest = lastItem((state.weights || []).slice().sort((a, b) => a.date.localeCompare(b.date)));
@@ -2298,22 +2839,43 @@
     }
     if (act === "save-profile") {
       const p = state.profile;
-      p.age = Number(document.getElementById("p-age").value);
+      const age = Number(document.getElementById("p-age").value);
+      const weight = Number(document.getElementById("p-weight").value);
+      const height = Number(document.getElementById("p-height").value);
+      const goalWeight = Number(document.getElementById("p-goal").value);
+      const err = C.validateStats({ age, weight, height, goalWeight, units: p.units });
+      if (err) return toast(err);
+      const oldDir = C.directionOf(
+        p.units === "metric" ? C.kgToLb(p.weight) : p.weight,
+        p.units === "metric" ? C.kgToLb(p.goalWeight) : p.goalWeight
+      );
+      p.age = age;
       p.sex = document.getElementById("p-sex").value;
-      p.weight = Number(document.getElementById("p-weight").value);
-      p.height = Number(document.getElementById("p-height").value);
-      p.goalWeight = Number(document.getElementById("p-goal").value);
+      p.weight = weight;
+      p.height = height;
+      p.goalWeight = goalWeight;
       p.activity = document.getElementById("p-activity").value;
       p.manualCalories = false;
       p.manualMacros = false;
-      const t = targets();
-      p.weeklyLb = t.weeklyLb;
-      // If user typed a weekly field, honor it (convert kg → lb if needed)
-      const wEl = document.getElementById("p-weekly");
-      if (wEl && wEl.value !== "") {
-        const raw = Number(wEl.value);
-        p.weeklyLb = p.units === "metric" ? C.round1(C.kgToLb(raw)) : raw;
+      if (document.getElementById("p-goal-date") && document.getElementById("p-goal-date").value) {
+        if (p.paceMode !== "intensity") applyPaceTo(p, "date", document.getElementById("p-goal-date").value);
       }
+      const newDir = C.directionOf(
+        p.units === "metric" ? C.kgToLb(p.weight) : p.weight,
+        p.units === "metric" ? C.kgToLb(p.goalWeight) : p.goalWeight
+      );
+      if (oldDir !== newDir && p.paceMode === "weekly") {
+        p.weeklyLb = null;
+        p.paceMode = "timeframe";
+        p.goalWeeks = "";
+        p.goalDate = "";
+      }
+      const t = targets();
+      if (!t || !t.valid) return toast("Check the numbers and try again.");
+      p.weeklyLb = t.weeklyLb;
+      p.goalWeeks = t.goalWeeks;
+      p.goalDate = t.goalDate;
+      p.intensity = t.intensity;
       state.plan = buildPlan(today, t.weightLb);
       saveState();
       toast("Profile and plan updated.");
@@ -2321,16 +2883,31 @@
     }
     if (act === "save-targets") {
       const p = state.profile;
-      p.calorieTarget = Number(document.getElementById("p-cal").value);
-      p.proteinG = Number(document.getElementById("p-pro").value);
-      p.carbsG = Number(document.getElementById("p-carb").value);
-      p.fatG = Number(document.getElementById("p-fat").value);
+      const cal = Number(document.getElementById("p-cal").value);
+      const pro = Number(document.getElementById("p-pro").value);
+      const carb = Number(document.getElementById("p-carb").value);
+      const fat = Number(document.getElementById("p-fat").value);
+      if (![cal, pro, carb, fat].every((n) => isFinite(n) && n >= 0)) {
+        return toast("Enter calorie and macro targets of zero or more.");
+      }
+      p.calorieTarget = cal;
+      p.proteinG = pro;
+      p.carbsG = carb;
+      p.fatG = fat;
       p.manualCalories = true;
       p.manualMacros = true;
       const wEl = document.getElementById("p-weekly");
       if (wEl && wEl.value !== "") {
         const raw = Number(wEl.value);
+        if (!isFinite(raw)) return toast("Enter a weekly change as a number.");
         p.weeklyLb = p.units === "metric" ? C.round1(C.kgToLb(raw)) : raw;
+        p.paceMode = "weekly";
+        const t = targets();
+        if (t) {
+          p.goalWeeks = t.goalWeeks;
+          p.goalDate = t.goalDate;
+          p.intensity = t.intensity;
+        }
       }
       saveState();
       toast("Targets saved.");
@@ -2419,7 +2996,7 @@
     await loadFoods();
     render();
     if ("serviceWorker" in navigator && location.protocol !== "file:") {
-      navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("SW register failed", err));
+      navigator.serviceWorker.register("./sw.js", { scope: "./" }).catch((err) => console.warn("SW register failed", err));
     }
   }
 
@@ -2460,6 +3037,7 @@
     render,
     STORE_KEY,
     MEALS,
+    achievements: () => (window.PPAchievements ? window.PPAchievements.compute(state, { today: C.localISODate(), targets: targets() }) : null),
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

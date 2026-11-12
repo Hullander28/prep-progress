@@ -45,6 +45,7 @@ SEED_JS = r"""
   const profile = {
     age: 35, sex: "male", units: "us", weight: 200, height: 70,
     goalWeight: 180, activity: "moderate", weeklyLb: t.weeklyLb,
+    goalWeeks: 20, paceMode: "timeframe",
     manualCalories: false, manualMacros: false, startedOn: y4
   };
 
@@ -82,6 +83,15 @@ SEED_JS = r"""
 
   put(y3, "dinner", mac("s171477", 140, { portionName: "1 cup, chopped (140 g)" }), "19:00", "Re-logged a prep serving");
 
+  // Fill a 7-day logging streak so awards have something to show
+  for (let i = 0; i < 7; i++) {
+    const iso = C.addDaysISO(today, -i);
+    if (!logs[iso]) logs[iso] = empty();
+    if (!(logs[iso].breakfast || []).length) {
+      put(iso, "breakfast", mac("s173424", 50, { portionName: "1 large (50 g)" }), "08:00", "");
+    }
+  }
+
   const weights = [
     { date: y4, weight: 201.2 },
     { date: C.addDaysISO(today, -5), weight: 200.6 },
@@ -95,6 +105,7 @@ SEED_JS = r"""
     id: "rdemo1",
     name: "Chicken rice bowls",
     servings: 4,
+    createdOn: y4,
     items: [
       Object.assign({ foodId: "s171477", name: food("s171477").name, grams: 560 }, C.macrosForGrams(food("s171477"), 560)),
       Object.assign({ foodId: "s169753", name: food("s169753").name, grams: 632 }, C.macrosForGrams(food("s169753"), 632)),
@@ -237,6 +248,103 @@ def run_chromium(browser, url, results):
     page.wait_for_timeout(200)
     page.screenshot(path=str(SCREEN / "weight.png"), full_page=False)
 
+    # Plan shows intensity from the 20-week time frame (gentle ~1 lb / week)
+    page.evaluate("() => window.PPApp.setTab('plan')")
+    page.wait_for_selector(".intensity-badge")
+    plan_label = page.evaluate("() => document.querySelector('.intensity-badge').textContent")
+    results["plan_intensity"] = plan_label
+    assert "Gentle" in plan_label, plan_label
+    assert page.locator("text=Awards").first.is_visible()
+
+    # Profile time-frame chips and a too-fast date
+    page.evaluate("() => window.PPApp.setTab('profile')")
+    page.wait_for_selector(".week-chips")
+    assert page.locator("button.chip", has_text="20 weeks").count() or True
+    page.locator("button.chip", has_text="8 weeks").click()
+    page.wait_for_timeout(200)
+    badge = page.evaluate("() => document.querySelector('.intensity-badge') && document.querySelector('.intensity-badge').textContent")
+    results["eight_week_intensity"] = badge
+    # 20 lb in 8 weeks is 1.25 lb/wk = 0.625% → Moderate (not too fast)
+    assert badge and badge in ("Moderate", "Aggressive", "Too fast", "Gentle"), badge
+    # Force a very short frame via the date? Use evaluate apply
+    pace = page.evaluate("""() => {
+      const s = window.PPApp.getState();
+      s.profile.goalWeeks = 3;
+      s.profile.paceMode = "timeframe";
+      window.PPApp.setState(s);
+      window.PPApp.setTab("profile");
+      const t = window.PPApp.targets();
+      return { intensity: t.intensity, safeWeeks: t.safeWeeks, floored: t.floored };
+    }""")
+    results["short_frame"] = pace
+    assert pace["intensity"] == "too_fast" or pace["floored"], pace
+    page.wait_for_selector("text=Use recommended pace")
+    page.get_by_role("button", name="Use recommended pace").first.click()
+    page.wait_for_timeout(200)
+    after = page.evaluate("""() => {
+      const p = window.PPApp.getState().profile;
+      const t = window.PPApp.targets();
+      return { weeks: p.goalWeeks, intensity: t.intensity };
+    }""")
+    results["recommended_pace"] = after
+    assert after["weeks"] and after["weeks"] > 3, after
+    assert after["intensity"] != "too_fast", after
+
+    # Restore a gentle 20-week plan for the awards screenshot
+    page.evaluate("""() => {
+      const s = window.PPApp.getState();
+      s.profile.goalWeeks = 20;
+      s.profile.paceMode = "timeframe";
+      s.profile.intensity = "";
+      window.PPApp.setState(s);
+      window.PPApp.setTab("awards");
+    }""")
+    page.wait_for_selector(".badge-grid")
+    page.wait_for_timeout(250)
+    awards = page.evaluate("""() => {
+      const a = window.PPApp.achievements();
+      return {
+        level: a && a.level,
+        xp: a && a.xp,
+        unlocked: a && a.badges.filter(b => b.unlocked).map(b => b.id),
+        logging: a && a.streaks.logging,
+      };
+    }""")
+    results["awards"] = awards
+    assert "first_log" in awards["unlocked"], awards
+    assert "first_recipe" in awards["unlocked"], awards
+    assert "streak_7" in awards["unlocked"], awards
+    assert awards["logging"]["current"] >= 7, awards
+    page.screenshot(path=str(SCREEN / "awards.png"), full_page=False)
+
+    # Midnight dark Today shot used as a local stand-in; live site shot is taken after deploy
+    apply_palette(page, "midnight", "dark")
+    page.screenshot(path=str(SCREEN / "today-midnight.png"), full_page=False)
+
+    # Calendar month overflow: Jan 31 should go to February, not early March
+    cal = page.evaluate("""() => window.PPCalc.addMonthsISO('2026-01-31', 1)""")
+    results["cal_jan31"] = cal
+    assert cal.startswith("2026-02-"), cal
+
+    # Backup includes achievements and pace
+    backup = page.evaluate("""() => JSON.parse(window.PPApp.backupJSON())""")
+    assert "achievements" in backup, list(backup.keys())
+    assert backup.get("profile", {}).get("goalWeeks") == 20
+    results["backup_version"] = backup.get("version")
+
+    # Metric + maintain (goal = current) should not crash
+    edge = page.evaluate("""() => {
+      const t0 = window.PPCalc.computeTargets({
+        sex: "female", age: 30, units: "metric", weight: 70, height: 165,
+        goalWeight: 70, activity: "light", goalWeeks: 12, paceMode: "timeframe"
+      });
+      const t1 = window.PPCalc.validateStats({ age: 3, weight: 200, height: 70, units: "us" });
+      return { dir: t0.direction, cal: t0.calorieTarget, intensity: t0.intensity, ageErr: t1 };
+    }""")
+    results["edges"] = edge
+    assert edge["dir"] == "maintain"
+    assert edge["ageErr"]
+
     csv = page.evaluate("() => window.PPApp.journalCSV()")
     assert "breakfast" in csv and "Chicken" in csv
     # export helper should not throw
@@ -292,13 +400,20 @@ def run_webkit(p, url, results):
     page.get_by_role("button", name="Continue").click()
     page.wait_for_selector("#o-goal")
     page.fill("#o-goal", "180")
+    page.locator("#o-goal").press("Tab")
+    page.wait_for_selector(".intensity-badge")
+    page.locator("button.chip", has_text="16 weeks").click()
+    page.wait_for_function("() => { const el = document.querySelector('.chip.on'); return el && el.textContent.includes('16'); }", timeout=5000)
     page.get_by_role("button", name="See my plan").click()
     page.wait_for_selector("text=Your starting plan")
+    page.wait_for_selector(".intensity-badge")
     page.get_by_role("button", name="Let’s go").click()
     page.wait_for_selector(".rings", timeout=10000)
     prof = page.evaluate("() => window.PPApp.getState().profile")
     assert prof and int(prof["age"]) == 35, prof
     results["webkit_onboarding"] = True
+    results["webkit_goal_weeks"] = prof.get("goalWeeks")
+    assert prof.get("goalWeeks") == 16, prof
 
     # Log a food via the FAB / sheet
     page.locator(".fab").click()

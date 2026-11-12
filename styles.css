@@ -1053,3 +1053,131 @@ code {
 @media (prefers-reduced-motion: reduce) {
   html.kb-open .tabbar, html.kb-open .fab { transition: none; }
 }
+
+
+/* Keep the FAB off meal totals on Today */
+.shell[data-tab="today"] .totals,
+.shell[data-tab="today"] .meal-head {
+  padding-right: 64px;
+}
+
+
+/* Goal pace */
+.pace-editor { margin-top: 4px; }
+.week-chips, .intensity-chips { margin-bottom: 10px; }
+.intensity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+}
+.intensity-badge.maintain,
+.intensity-badge.gentle {
+  background: var(--sage-soft);
+  color: var(--sage);
+}
+.intensity-badge.moderate {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+.intensity-badge.aggressive {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.intensity-badge.too_fast {
+  background: color-mix(in srgb, var(--rose) 18%, transparent);
+  color: var(--rose);
+}
+.pace-card .hint { margin: 8px 0 0; }
+
+/* Awards */
+.streak-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.streak {
+  background: var(--card-2);
+  border-radius: 16px;
+  padding: 12px;
+}
+.streak .val {
+  font-size: 1.6rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.badge-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.badge {
+  background: var(--card-2);
+  border-radius: 16px;
+  padding: 12px 10px 10px;
+  text-align: center;
+  border: 1px solid var(--line);
+}
+.badge .badge-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 8px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.badge .badge-icon svg { width: 28px; height: 28px; }
+.badge .name { font-weight: 700; font-size: 0.88rem; letter-spacing: -0.01em; }
+.badge .meta { font-size: 0.75rem; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+.badge.locked {
+  opacity: 0.72;
+}
+.badge.locked .badge-icon {
+  background: var(--card);
+  color: var(--muted);
+}
+.badge.unlocked .badge-icon {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.awards-teaser h2 { font-size: 1.05rem; }
+.level-card .bar { background: var(--line); }
+
+/* Confetti — palette-colored bits; disabled under reduced motion */
+.confetti {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  overflow: hidden;
+}
+.confetti .c {
+  position: absolute;
+  top: -12px;
+  left: calc(8% + (var(--i) * 3.6%));
+  width: 8px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: confetti-fall 1.6s ease-in forwards;
+  animation-delay: calc(var(--i) * 28ms);
+  opacity: 0.9;
+}
+.confetti .c1 { background: var(--sage); width: 6px; height: 10px; }
+.confetti .c2 { background: var(--gold); width: 10px; height: 8px; }
+.confetti .c3 { background: var(--rose); }
+.confetti .c4 { background: var(--accent-2); width: 7px; border-radius: 99px; }
+.confetti .c5 { background: var(--gold); transform: rotate(20deg); }
+@keyframes confetti-fall {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(110vh) rotate(320deg); opacity: 0.15; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confetti { display: none !important; }
+}

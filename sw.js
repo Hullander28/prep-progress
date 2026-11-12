@@ -1,10 +1,11 @@
 /* Prep & Progress service worker — cache-first app shell for offline use. */
-const VERSION = "pp-v2-2026-11-12-midnight";
+const VERSION = "pp-v3-2026-11-12-qa-pace";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./js/calc.js",
+  "./js/achievements.js",
   "./js/app.js",
   "./manifest.webmanifest",
   "./data/foods.json",
