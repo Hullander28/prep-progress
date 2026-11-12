@@ -1222,3 +1222,29 @@ code {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+
+.pill.kind-restaurant { background: color-mix(in srgb, #c45c26 22%, var(--card)); color: #9a3b10; }
+.pill.kind-grocery { background: color-mix(in srgb, var(--accent) 18%, var(--card)); color: var(--accent-2); }
+.pill.kind-basic { background: var(--accent-soft); color: var(--muted); }
+.pill.kind-custom { background: var(--accent-soft); color: var(--accent-2); }
+[data-theme="dark"] .pill.kind-restaurant { color: #ffb089; background: color-mix(in srgb, #c45c26 28%, var(--card)); }
+.search-box .icon-btn { margin-right: -6px; color: var(--muted); }
+.food-filters { margin: -4px 0 12px; }
+.food-row .name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.food-row .pill { font-size: 0.68rem; padding: 2px 8px; font-weight: 700; letter-spacing: 0.01em; }
+.scan-wrap {
+  background: #111;
+  border-radius: 16px;
+  overflow: hidden;
+  margin: 0 0 14px;
+  aspect-ratio: 4 / 3;
+  position: relative;
+}
+.scan-wrap video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan-wrap #scan-status {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  margin: 0; padding: 8px 12px;
+  background: color-mix(in srgb, #000 55%, transparent);
+  color: #fff;
+}
+.online-search { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }

@@ -21,7 +21,7 @@ Then open `http://<your-computer-ip>:8080` on the phone (same Wi‑Fi). In Chrom
 - **Today** — calorie and macro rings, meals you can log, jump into the journal
 - **Journal** — calendar, a scrollable history with time / meal / food / portion / macros, daily totals vs targets, edit or delete entries, optional notes (hunger, mood, how you felt), re-log an entry or a whole meal, CSV export
 - **Prep** — batch recipes with per-serving macros, then log servings to a day
-- **Foods** — search ~8,000 USDA foods with household portions; add/import your own
+- **Foods** — search USDA basics, fast-food restaurant items, and name-brand grocery products (with brand, serving size, and type badges); filter All / Restaurants / Grocery / Basic; optional online search and barcode lookup; add/import your own
 - **Weight** — weigh-ins, trend chart, 7-day average, progress to goal
 - **Plan** — weekly weight milestones at the pace you pick, habit checkoffs, and awards
 - **You** (profile icon) — targets, units, light/dark theme, JSON backup import/export
@@ -30,21 +30,26 @@ Calories use the Mifflin-St Jeor equation and a cautious pace (about ½–1% of 
 
 ## Food database
 
-Built from public-domain USDA FoodData Central data (CC0):
+Built from public-domain USDA FoodData Central data (CC0). Values are never invented; foods missing energy or macros are omitted.
 
 | Dataset | Release | Included |
 | --- | --- | --- |
-| SR Legacy | April 2018 (`FoodData_Central_sr_legacy_food_csv_2018-04.zip`) | 7,793 foods |
-| Foundation Foods | April 2026 (`FoodData_Central_foundation_food_csv_2026-04-30.zip`) | 237 unique foods (140 name overlaps with SR skipped; 92 omitted because energy/macros were missing — values were never invented) |
+| SR Legacy | April 2018 (`FoodData_Central_sr_legacy_food_csv_2018-04.zip`) | 7,793 basic foods, including 174 named chain items (McDonald's, Burger King, Wendy's, Taco Bell, Chick-fil-A, Subway, KFC, Popeyes, Pizza Hut, Domino's, Little Caesars, Papa John's, Arby's) and 160 generic “Fast foods” / “Restaurant” items |
+| Foundation Foods | April 2026 (`FoodData_Central_foundation_food_csv_2026-04-30.zip`) | 237 unique foods (140 name overlaps with SR skipped; 92 omitted because energy/macros were missing) |
+| Survey Foods (FNDDS 2021–2023) | October 2024 (`FoodData_Central_survey_food_json_2024-10-31.zip`) | 146 additional fast-food / restaurant items not already in SR (`data/restaurants.json`, ~34 KB) |
+| Branded Foods | October 2026 (`FoodData_Central_branded_food_csv_2026-10-29.zip`) | 10,000 curated US grocery products from widely sold national and store brands, with brand name, label serving, and barcode when present (`data/grocery.json`, ~1.3 MB). Not the full branded database. |
 
-**Total: 8,030 foods**, nutrient values per 100 g, plus household portions from USDA `food_portion` (7,559 foods have at least one). Compact file: `data/foods.json` (~0.98 MB).
+**Offline total: 8,030 basic + 146 restaurant extras + 10,000 grocery = 18,176 foods.** Nutrient values are per 100 g. Restaurant and grocery items use the published serving size as the default portion when USDA provided one.
 
 The October 2026 Foundation CSV archive was incomplete (no `food.csv` / `food_nutrient.csv` / `food_portion.csv`), so April 2026 was used instead.
 
-Rebuild from the CSVs (if you have them under `/tmp/usda`):
+If something isn’t in the offline list, search online (needs a connection). That lookup uses [Open Food Facts](https://world.openfoodfacts.org), a collaborative database under the Open Database License (ODbL), and caches matches on the phone. Barcode lookup uses the same source; camera scanning works in browsers that support the Barcode Detection API (typically Android Chrome). On iPhone Safari, type the number under the barcode.
+
+Rebuild (CSVs/JSON under `/tmp/usda`):
 
 ```bash
 python3 scripts/build_foods.py
+python3 scripts/build_catalog.py
 ```
 
 Import your own foods with `data/import-template.csv` (`name,serving_name,serving_grams,kcal,protein,carbs,fat` — values are for that serving).
@@ -61,7 +66,7 @@ The trophy in the header (and a section on **Plan**) opens streaks and badges. L
 
 The app works fully offline on your phone with no account. If you want a cloud backup, sign in with email from **You** (or the short prompt after setup). You’ll get a 6-digit code — that’s more reliable on iPhone than a sign-in link, which often opens Safari instead of the installed app.
 
-Setup for the hosted copy is in `supabase/SETUP.md` (SQL, Auth site URL, and the email template). Your journal, plan, and awards sync; the USDA food database stays on the device.
+Setup for the hosted copy is in `supabase/SETUP.md` (SQL, Auth site URL, and the email template). Your journal, plan, and awards sync; the food databases stay on the device (online search results are cached locally, not synced).
 
 ## Color schemes
 
@@ -101,6 +106,7 @@ node tests/test_calc.js
 node tests/test_achievements.js
 node tests/test_sync.js
 node tests/test_foods.js
+node tests/test_catalog.js
 python3 tests/run_e2e.py
 ```
 
@@ -109,5 +115,7 @@ Phone-size screenshots (390×844) are in `screens/`.
 ## Limits
 
 - Data stays on this device unless you export a backup or journal CSV. There is no account or cloud sync.
-- USDA names can be long or formal (e.g. “Cereals, oats…”). Branded grocery items are not in this build (that dataset is huge); add those as custom foods or via CSV.
+- USDA names can be long or formal (e.g. “Cereals, oats…”).
+- Restaurant items come from published USDA SR and FNDDS data, not a live chain menu feed, so limited-time or very new items may be missing or slightly dated. Chipotle, Starbucks, and some other chains have little or no named USDA menu coverage; try online search, a barcode, or a custom food.
+- The grocery list is a curated subset of USDA Branded Foods (popular US brands), not every product on the shelf. Online search and barcodes fill gaps when you have a connection.
 - Offline use requires one successful load over http(s). `file://` will not register the service worker.

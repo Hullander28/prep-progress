@@ -31,6 +31,7 @@
     journal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5h11.5A1.5 1.5 0 0 1 19 5v15.5H7.5A2.5 2.5 0 0 1 5 18V5.5A2 2 0 0 1 7 3.5z"/><path d="M5 18c0-1 .8-2 2.5-2H19"/><path d="M9 8h6M9 12h6"/></svg>',
     trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5h8v3a4 4 0 0 1-8 0V5z"/><path d="M8 6H6.5A2.5 2.5 0 0 0 6.5 11C7.5 11 8 10 8.5 9"/><path d="M16 6h1.5A2.5 2.5 0 0 1 17.5 11C16.5 11 16 10 15.5 9"/><path d="M12 12v3"/><path d="M9 19h6"/><path d="M10 16h4v3"/></svg>',
     relog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 14-4.5"/><path d="M18 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 4.5"/><path d="M6 20v-4h4"/></svg>',
+    barcode: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6v12M7 6v12M9 6v12M13 6v12M15 6v12M19 6v12M3 4h2M19 4h2M3 20h2M19 20h2"/></svg>',
   };
 
   const TABS = [
@@ -75,6 +76,12 @@
   let confettiOn = false;
   let onb = { step: 0, draft: emptyDraft() };
   let foodsQuery = "";
+  let foodsFilter = "all";
+  let foodsOnlineStatus = "";
+  let foodsOnlineError = "";
+  let onlineTimer = 0;
+  let scanTimer = 0;
+  let scanStream = null;
   let lastTab = "today";
   let journalCursor = C.localISODate();
   let deferredInstall = null;
@@ -312,40 +319,21 @@
   function findFood(id) {
     return allFoods().find((f) => f.id === id) || null;
   }
-  function searchFoods(q, limit) {
+  function searchFoods(q, limit, kind) {
+    const cat = window.PPCatalog;
+    if (cat && cat.search) {
+      return cat.search(allFoods(), q, { limit: limit || 40, kind: kind || foodsFilter || "all" });
+    }
     limit = limit || 40;
     const all = allFoods();
     const query = (q || "").trim().toLowerCase();
     if (!query) return all.slice(0, Math.min(20, all.length));
-    const words = query.split(/\s+/).filter(Boolean);
-    const scored = [];
-    for (let i = 0; i < all.length; i++) {
-      const f = all[i];
-      const n = (f.name || "").toLowerCase();
-      let ok = true;
-      for (let w = 0; w < words.length; w++) {
-        if (!n.includes(words[w])) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      let score = 0;
-      if (n.startsWith(query)) score += 200;
-      else if (n.includes(" " + query) || n.includes("," + query)) score += 80;
-      const idx = n.indexOf(words[0]);
-      score += Math.max(0, 40 - idx);
-      score -= Math.min(n.length, 80) * 0.15;
-      if (f.custom) score += 15;
-      scored.push([score, f]);
-    }
-    scored.sort((a, b) => b[0] - a[0]);
-    return scored.slice(0, limit).map((x) => x[1]);
+    return all.filter((f) => (f.name || "").toLowerCase().includes(query)).slice(0, limit);
   }
 
-  function unpackFoods(payload) {
-    const list = (payload && payload.foods) || [];
-    foods = list.map((row) => ({
+  function unpackFoods(payload, fallback) {
+    const cat = window.PPCatalog;
+    const incoming = cat && cat.unpack ? cat.unpack(payload, fallback || { source: "usda-sr" }) : ((payload && payload.foods) || []).map((row) => ({
       id: row[0],
       name: row[1],
       kcal: row[2],
@@ -353,29 +341,66 @@
       carbs: row[4],
       fat: row[5],
       portions: (row[6] || []).map((p) => ({ name: p[0], grams: p[1] })),
+      kind: "basic",
+      source: "usda",
     }));
+    if (!fallback) {
+      foods = incoming;
+    } else {
+      foods = cat && cat.mergeFoods ? cat.mergeFoods(foods, incoming) : foods.concat(incoming);
+    }
     foodsReady = true;
     foodsError = "";
+    return incoming.length;
+  }
+
+  function mergeCachedFoods() {
+    const cat = window.PPCatalog;
+    if (!cat || !cat.loadCache) return;
+    const cached = cat.loadCache();
+    if (cached.length) foods = cat.mergeFoods(foods, cached);
+  }
+
+  async function fetchJsonAsset(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(url + " " + res.status);
+    return res.json();
   }
 
   async function loadFoods() {
     try {
-      const res = await fetch("./data/foods.json");
-      if (!res.ok) throw new Error("Could not load food database (" + res.status + ")");
-      const data = await res.json();
-      unpackFoods(data);
+      const data = await fetchJsonAsset("./data/foods.json");
+      unpackFoods(data, null);
+      mergeCachedFoods();
       foodsReady = true;
       foodsError = "";
     } catch (err) {
       if (foods && foods.length) {
         foodsReady = true;
         foodsError = "";
+      } else {
+        foodsReady = false;
+        foodsError = err.message || "Could not load the food database.";
+        console.error(err);
         return;
       }
-      foodsReady = false;
-      foodsError = err.message || "Could not load the food database.";
-      console.error(err);
     }
+    // Lazy-load restaurant + grocery packs; USDA basics already searchable.
+    const extras = [
+      { url: "./data/restaurants.json", kind: "restaurant", source: "usda-fndds" },
+      { url: "./data/grocery.json", kind: "grocery", source: "usda-branded" },
+    ];
+    await Promise.all(
+      extras.map((item) =>
+        fetchJsonAsset(item.url)
+          .then((data) => unpackFoods(data, { kind: item.kind, source: item.source }))
+          .catch((err) => {
+            console.warn("Optional food pack failed", item.url, err);
+            return 0;
+          })
+      )
+    );
+    mergeCachedFoods();
   }
 
   function greeting() {
@@ -1215,10 +1240,87 @@
   }
 
   /* ---------- Foods ---------- */
+  function kindBadgeHtml(f) {
+    const cat = window.PPCatalog;
+    const b = cat && cat.badge ? cat.badge(f) : { kind: f.custom ? "custom" : "basic", label: f.custom ? "Yours" : "Basic" };
+    return '<span class="pill kind-' + esc(b.kind) + '">' + esc(b.label) + "</span>";
+  }
+  function foodMetaLine(f) {
+    const cat = window.PPCatalog;
+    const serve = cat && cat.servingMacros ? cat.servingMacros(f) : null;
+    const brand = f.brand ? esc(f.brand) + " · " : "";
+    if (serve && serve.grams !== 100) {
+      return brand + fmtKcal(serve.kcal) + " kcal · " + fmtG(serve.protein) + "P " + fmtG(serve.carbs) + "C " + fmtG(serve.fat) + "F <span class=\"muted\">/ " + esc(serve.label) + "</span>";
+    }
+    return brand + fmtKcal(f.kcal) + " kcal · " + fmtG(f.protein) + "P " + fmtG(f.carbs) + "C " + fmtG(f.fat) + "F <span class=\"muted\">/ 100 g</span>";
+  }
+  function foodRowHtml(f, act) {
+    return (
+      '<button class="food-row" data-act="' +
+      esc(act) +
+      '" data-id="' +
+      esc(f.id) +
+      '"><div><div class="name">' +
+      esc(displayName(f.name)) +
+      " " +
+      kindBadgeHtml(f) +
+      '</div><div class="meta">' +
+      foodMetaLine(f) +
+      "</div></div></button>"
+    );
+  }
+  function filterChipsHtml() {
+    const counts = { all: 0, restaurant: 0, grocery: 0, basic: 0 };
+    allFoods().forEach((f) => {
+      counts.all++;
+      const k = f.custom ? "basic" : f.kind || "basic";
+      if (counts[k] != null && k !== "all") counts[k]++;
+    });
+    // Custom foods sit with "Yours" but the Basic chip is for USDA basics; count customs in all only.
+    const opts = [
+      ["all", "All"],
+      ["restaurant", "Restaurants"],
+      ["grocery", "Grocery"],
+      ["basic", "Basic"],
+    ];
+    return (
+      '<div class="chips food-filters" role="tablist" aria-label="Food type">' +
+      opts
+        .map(([id, label]) => {
+          return (
+            '<button type="button" class="chip' +
+            (foodsFilter === id ? " on" : "") +
+            '" data-act="foods-filter" data-filter="' +
+            id +
+            '"' +
+            (foodsFilter === id ? ' aria-current="true"' : "") +
+            ">" +
+            esc(label) +
+            "</button>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+  function foodsCountsLine() {
+    if (!foodsReady) return "Loading database…";
+    let r = 0,
+      g = 0,
+      b = 0;
+    foods.forEach((f) => {
+      if (f.kind === "restaurant") r++;
+      else if (f.kind === "grocery") g++;
+      else b++;
+    });
+    return b.toLocaleString() + " basic · " + r.toLocaleString() + " restaurant · " + g.toLocaleString() + " grocery";
+  }
   function renderFoods() {
-    let html = topbar("Foods", foodsReady ? foods.length.toLocaleString() + " USDA foods, plus your own." : "Loading database…");
-    html += '<div class="search-box">' + ICONS.search + '<input type="search" id="foods-q" placeholder="Search chicken, rice, yogurt…" value="' + esc(foodsQuery) + '" autocomplete="off"></div>';
-    if (foodsError) html += '<div class="note">Could not load the built-in database. You can still add custom foods. ' + esc(foodsError) + "</div>";
+    let html = topbar("Foods", foodsCountsLine());
+    html += '<div class="search-box">' + ICONS.search + '<input type="search" id="foods-q" placeholder="Search a food, brand, or restaurant…" value="' + esc(foodsQuery) + '" autocomplete="off">';
+    html += '<button type="button" class="icon-btn sm" data-act="open-barcode" aria-label="Scan or enter a barcode">' + ICONS.barcode + "</button></div>";
+    html += filterChipsHtml();
+    if (foodsError) html += '<div class="note">Could not load the built-in database. You can still add custom foods or search online. ' + esc(foodsError) + "</div>";
     html += '<div class="btn-row" style="margin-bottom:12px"><button class="btn btn-ghost" data-act="add-custom">Add custom</button>';
     html += '<button class="btn btn-ghost" data-act="import-foods">Import CSV / JSON</button></div>';
     html += '<div id="search-results" class="card" style="padding-top:4px;padding-bottom:8px">';
@@ -1231,27 +1333,22 @@
       return '<p class="muted" style="padding:12px">Still loading foods…</p>';
     }
     const rows = searchFoods(q, 40);
-    if (!rows.length) return '<p class="muted" style="padding:12px">No matches. Try a shorter word, or add a custom food.</p>';
-    return rows
-      .map((f) => {
-        return (
-          '<button class="food-row" data-act="food-detail" data-id="' +
-          esc(f.id) +
-          '"><div><div class="name">' +
-          esc(displayName(f.name)) +
-          (f.custom ? ' <span class="pill">Yours</span>' : "") +
-          '</div><div class="meta">' +
-          fmtKcal(f.kcal) +
-          " kcal · " +
-          fmtG(f.protein) +
-          "P " +
-          fmtG(f.carbs) +
-          "C " +
-          fmtG(f.fat) +
-          "F <span class=\"muted\">/ 100 g</span></div></div></button>"
-        );
-      })
-      .join("");
+    let html = "";
+    if (!rows.length) {
+      html += '<p class="muted" style="padding:12px">No local matches. Try a shorter word, a brand name, or search online.</p>';
+    } else {
+      html += rows.map((f) => foodRowHtml(f, "food-detail")).join("");
+    }
+    const qtrim = (q || "").trim();
+    if (qtrim.length >= 2) {
+      html += '<div class="online-search">';
+      if (foodsOnlineStatus) html += '<p class="muted" style="padding:8px 12px 0">' + esc(foodsOnlineStatus) + "</p>";
+      if (foodsOnlineError) html += '<p class="note" style="margin:8px 12px">' + esc(foodsOnlineError) + "</p>";
+      html += '<button type="button" class="btn btn-ghost btn-block" data-act="search-online">Search grocery stores online</button>';
+      html += '<p class="tiny muted" style="padding:4px 12px 8px">Uses Open Food Facts when you have a connection. Results are saved on this phone.</p>';
+      html += "</div>";
+    }
+    return html;
   }
 
   /* ---------- Weight ---------- */
@@ -1582,6 +1679,8 @@
     html += '<button class="btn btn-outline" data-act="export-backup">Export JSON</button>';
     html += '<button class="btn btn-outline" data-act="export-journal-csv">Journal CSV</button></div>';
     html += '<label class="btn btn-ghost btn-block" style="margin-top:10px">Import backup JSON<input type="file" id="import-backup" accept="application/json,.json" hidden></label></div>';
+    html += '<div class="card" id="food-credits"><h2>Food data &amp; credits</h2><p class="soft tiny" style="margin-top:0">Built-in foods come from USDA FoodData Central (public domain / CC0): SR Legacy, Foundation Foods, Survey Foods (FNDDS) for many restaurant and fast-food items, and a curated set of US Branded Foods for grocery products. Values are stored per 100 g; restaurant and grocery items also include a published serving size when USDA provided one.</p>';
+    html += '<p class="soft tiny">Online search and barcode lookup use <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>, a collaborative database under the Open Database License (ODbL). Those results are cached only on this phone. Nutrition is an estimate, not medical advice, and restaurant menus change.</p></div>';
     html += '<button class="btn btn-danger btn-block" data-act="reset-data">Erase all my data…</button>';
     return html;
   }
@@ -1846,6 +1945,7 @@
     const s = sheet;
     let inner = '<div class="sheet-handle"></div>';
     if (s.type === "log-food") inner += sheetLogFood();
+    if (s.type === "barcode") inner += sheetBarcode();
     else if (s.type === "log-amount") inner += sheetLogAmount();
     else if (s.type === "edit-entry") inner += sheetEditEntry();
     else if (s.type === "food-detail") inner += sheetFoodDetail();
@@ -1869,21 +1969,17 @@
   function sheetLogFood() {
     const q = sQuery();
     let html = "<h2>Log a food</h2>" + mealSelect(sheet.meal || "breakfast");
-    html += '<div class="search-box" style="margin-top:10px">' + ICONS.search + '<input type="search" id="sheet-q" placeholder="Search foods…" value="' + esc(q) + '" autocomplete="off"></div>';
+    html += '<div class="search-box" style="margin-top:10px">' + ICONS.search + '<input type="search" id="sheet-q" placeholder="Search a food, brand, or restaurant…" value="' + esc(q) + '" autocomplete="off">';
+    html += '<button type="button" class="icon-btn sm" data-act="open-barcode" aria-label="Scan or enter a barcode">' + ICONS.barcode + "</button></div>";
+    html += filterChipsHtml();
     html += '<div id="sheet-results">';
-    html += searchFoods(q, 25)
-      .map((f) => {
-        return (
-          '<button class="food-row" data-act="pick-food" data-id="' +
-          esc(f.id) +
-          '"><div><div class="name">' +
-          esc(displayName(f.name)) +
-          '</div><div class="meta">' +
-          fmtKcal(f.kcal) +
-          " kcal / 100 g</div></div></button>"
-        );
-      })
-      .join("") || '<p class="muted">No matches.</p>';
+    const rows = searchFoods(q, 25);
+    html += rows.map((f) => foodRowHtml(f, "pick-food")).join("") || '<p class="muted">No local matches.</p>';
+    if ((q || "").trim().length >= 2) {
+      html += '<button type="button" class="btn btn-ghost btn-block" data-act="search-online" style="margin-top:8px">Search grocery stores online</button>';
+      if (foodsOnlineStatus) html += '<p class="muted">' + esc(foodsOnlineStatus) + "</p>";
+      if (foodsOnlineError) html += '<p class="note">' + esc(foodsOnlineError) + "</p>";
+    }
     html += "</div>";
     html += '<button class="btn btn-ghost btn-block" style="margin-top:8px" data-act="add-custom">Add a custom food</button>';
     return html;
@@ -1891,12 +1987,32 @@
   function sQuery() {
     return sheet.q != null ? sheet.q : foodsQuery;
   }
+  function sheetBarcode() {
+    const cat = window.PPCatalog || {};
+    const canDetect = cat.hasBarcodeDetector && cat.hasBarcodeDetector();
+    const canCam = cat.canUseCamera && cat.canUseCamera();
+    let html = "<h2>Barcode</h2>";
+    html += '<p class="hint" style="margin-top:0">Look up a grocery product in the built-in list, or on Open Food Facts if you have a connection.</p>';
+    if (canDetect && canCam) {
+      html += '<div class="scan-wrap"><video id="barcode-video" playsinline autoplay muted></video><p class="tiny muted" id="scan-status">Point the camera at a barcode.</p></div>';
+    } else if (canCam && !canDetect) {
+      html += '<p class="note">Camera barcode scanning isn\'t available in this browser (common on iPhone Safari). Type the number under the barcode instead.</p>';
+    }
+    html += '<label class="field">Barcode number<input id="barcode-manual" inputmode="numeric" pattern="[0-9]*" placeholder="e.g. 012000161519" value="' + esc((sheet && sheet.code) || "") + '"></label>';
+    html += '<button class="btn btn-primary btn-block" data-act="lookup-barcode">Look up barcode</button>';
+    if (sheet && sheet.barcodeError) html += '<p class="note" style="margin-top:10px">' + esc(sheet.barcodeError) + "</p>";
+    return html;
+  }
   function sheetLogAmount() {
     const f = findFood(sheet.foodId) || sheet.food;
     if (!f) return "<h2>Food missing</h2>";
     const portions = f.portions || [];
     let html = "<h2>" + esc(displayName(f.name)) + "</h2>";
+    if (f.brand) html += '<p class="soft" style="margin:0 0 6px">' + esc(f.brand) + " " + kindBadgeHtml(f) + "</p>";
+    else html += '<p class="soft" style="margin:0 0 6px">' + kindBadgeHtml(f) + "</p>";
     html += '<p class="hint" style="margin-top:0">' + fmtKcal(f.kcal) + " kcal · " + fmtG(f.protein) + "P · " + fmtG(f.carbs) + "C · " + fmtG(f.fat) + "F per 100 g</p>";
+    const srcAmt = foodSourceLabel(f);
+    if (srcAmt) html += '<p class="tiny muted">' + srcAmt + "</p>";
     html += mealSelect(sheet.meal || "breakfast");
     html += '<label class="field">Portion<select id="s-portion">';
     html += '<option value="100" data-grams="100">100 g</option>';
@@ -1937,11 +2053,26 @@
     html += '<button class="btn btn-danger" data-act="delete-entry">Delete</button></div>';
     return html;
   }
+  function foodSourceLabel(f) {
+    const src = (f && f.source) || "";
+    if (src === "openfoodfacts") return "Source: Open Food Facts (ODbL). Values are per 100 g as published.";
+    if (src === "usda-branded") return "Source: USDA FoodData Central Branded Foods (public domain).";
+    if (src === "usda-fndds") return "Source: USDA FNDDS 2021-2023 survey foods (public domain).";
+    if (src === "usda-sr" || src === "usda" || (!src && !f.custom && f.id && (String(f.id).charAt(0) === "s" || String(f.id).charAt(0) === "f"))) {
+      return "Source: USDA FoodData Central (public domain).";
+    }
+    if (f && f.custom) return "This is one of your custom foods.";
+    return "";
+  }
   function sheetFoodDetail() {
     const f = findFood(sheet.foodId);
     if (!f) return "<h2>Not found</h2>";
     let html = "<h2>" + esc(displayName(f.name)) + "</h2>";
+    if (f.brand) html += '<p class="soft" style="margin-top:0">' + esc(f.brand) + " " + kindBadgeHtml(f) + "</p>";
+    else html += '<p class="soft" style="margin-top:0">' + kindBadgeHtml(f) + "</p>";
     html += '<p class="soft">' + fmtKcal(f.kcal) + " kcal · " + fmtG(f.protein) + "P · " + fmtG(f.carbs) + "C · " + fmtG(f.fat) + "F per 100 g</p>";
+    const src = foodSourceLabel(f);
+    if (src) html += '<p class="tiny muted">' + src + "</p>";
     if (f.portions && f.portions.length) {
       html += "<h3 class=\"tiny muted\" style=\"margin:12px 0 4px\">Household portions</h3>";
       f.portions.forEach((p) => {
@@ -2366,10 +2497,13 @@
     if (foodsQ) {
       foodsQ.addEventListener("input", () => {
         foodsQuery = foodsQ.value;
+        foodsOnlineStatus = "";
+        foodsOnlineError = "";
         const box = document.getElementById("search-results");
         if (box) box.innerHTML = renderFoodResults(foodsQuery);
         bindResults(box);
         foodsQ.focus();
+        scheduleOnlineSearch(foodsQuery);
       });
     }
     const sheetQ = document.getElementById("sheet-q");
@@ -2378,11 +2512,17 @@
         if (sheet) sheet.q = sheetQ.value;
         const box = document.getElementById("sheet-results");
         if (box && sheet && sheet.type === "log-food") {
-          box.innerHTML =
-            searchFoods(sheetQ.value, 25)
-              .map((f) => '<button class="food-row" data-act="pick-food" data-id="' + esc(f.id) + '"><div><div class="name">' + esc(displayName(f.name)) + '</div><div class="meta">' + fmtKcal(f.kcal) + " kcal / 100 g</div></div></button>")
-              .join("") || '<p class="muted">No matches.</p>';
+          const qv = sheetQ.value;
+          const rows = searchFoods(qv, 25);
+          let html = rows.map((f) => foodRowHtml(f, "pick-food")).join("") || '<p class="muted">No local matches.</p>';
+          if ((qv || "").trim().length >= 2) {
+            html += '<button type="button" class="btn btn-ghost btn-block" data-act="search-online" style="margin-top:8px">Search grocery stores online</button>';
+            if (foodsOnlineStatus) html += '<p class="muted">' + esc(foodsOnlineStatus) + "</p>";
+            if (foodsOnlineError) html += '<p class="note">' + esc(foodsOnlineError) + "</p>";
+          }
+          box.innerHTML = html;
           bindResults(box);
+          scheduleOnlineSearch(qv);
         } else if (box && sheet && sheet.type === "recipe-edit") {
           box.innerHTML = searchFoods(sheetQ.value, 12)
             .map((f) => '<button class="food-row" data-act="r-add" data-id="' + esc(f.id) + '"><div class="name">' + esc(displayName(f.name)) + "</div></button>")
@@ -2505,6 +2645,16 @@
       });
       sync();
     }
+    const barcodeInput = document.getElementById("barcode-manual");
+    if (barcodeInput) {
+      barcodeInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          lookupBarcodeCode(barcodeInput.value);
+        }
+      });
+    }
+    if (sheet && sheet.type === "barcode") startBarcodeScan();
   }
   function bindResults(box) {
     if (!box) return;
@@ -2531,6 +2681,164 @@
     saveState();
   }
 
+  function stopBarcodeScan() {
+    if (scanTimer) {
+      clearTimeout(scanTimer);
+      scanTimer = 0;
+    }
+    if (scanStream) {
+      try {
+        scanStream.getTracks().forEach((tr) => tr.stop());
+      } catch (err) {}
+      scanStream = null;
+    }
+  }
+  function startBarcodeScan() {
+    stopBarcodeScan();
+    const cat = window.PPCatalog;
+    if (!cat || !cat.hasBarcodeDetector || !cat.hasBarcodeDetector() || !cat.canUseCamera()) return;
+    const video = document.getElementById("barcode-video");
+    const status = document.getElementById("scan-status");
+    if (!video || !navigator.mediaDevices) return;
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
+      .then((stream) => {
+        if (!sheet || sheet.type !== "barcode") {
+          stream.getTracks().forEach((tr) => tr.stop());
+          return;
+        }
+        scanStream = stream;
+        video.srcObject = stream;
+        const play = video.play();
+        if (play && play.catch) play.catch(function () {});
+        const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39"] });
+        const tick = () => {
+          if (!sheet || sheet.type !== "barcode" || !scanStream) return;
+          detector
+            .detect(video)
+            .then((codes) => {
+              if (codes && codes.length && codes[0].rawValue) {
+                const input = document.getElementById("barcode-manual");
+                if (input) input.value = codes[0].rawValue;
+                lookupBarcodeCode(codes[0].rawValue);
+                return;
+              }
+              scanTimer = setTimeout(tick, 280);
+            })
+            .catch(() => {
+              scanTimer = setTimeout(tick, 500);
+            });
+        };
+        scanTimer = setTimeout(tick, 400);
+      })
+      .catch((err) => {
+        if (status) status.textContent = "Camera unavailable. Type the barcode instead.";
+        console.warn(err);
+      });
+  }
+  function rememberFood(food) {
+    if (!food) return;
+    const cat = window.PPCatalog;
+    if (cat && cat.mergeFoods) foods = cat.mergeFoods(foods, [food]);
+    else foods.push(food);
+    if (cat && cat.remember) cat.remember(food);
+  }
+  function lookupBarcodeCode(code) {
+    const cat = window.PPCatalog;
+    const raw = String(code || "").replace(/\s+/g, "");
+    if (!sheet || sheet.type !== "barcode") sheet = { type: "barcode", code: raw, barcodeError: "" };
+    else {
+      sheet.code = raw;
+      sheet.barcodeError = "";
+    }
+    const local = cat && cat.lookupBarcodeLocal ? cat.lookupBarcodeLocal(allFoods(), raw) : null;
+    if (local) {
+      stopBarcodeScan();
+      toast("Found " + displayName(local.name));
+      sheet = { type: "log-amount", foodId: local.id, meal: (sheet && sheet.meal) || "breakfast", time: nowTime() };
+      render();
+      return;
+    }
+    if (!cat || !cat.lookupBarcode) {
+      sheet.barcodeError = "Online lookup isn\'t available right now.";
+      render();
+      return;
+    }
+    sheet.barcodeError = "";
+    const status = document.getElementById("scan-status");
+    if (status) status.textContent = "Looking up…";
+    cat
+      .lookupBarcode(raw)
+      .then((food) => {
+        rememberFood(food);
+        stopBarcodeScan();
+        toast("Found " + displayName(food.name));
+        sheet = { type: "log-amount", foodId: food.id, meal: (sheet && sheet.meal) || "breakfast", time: nowTime() };
+        render();
+      })
+      .catch((err) => {
+        sheet = Object.assign({}, sheet, { type: "barcode", code: raw, barcodeError: (err && err.message) || "Lookup failed." });
+        render();
+      });
+  }
+  function scheduleOnlineSearch(q) {
+    if (onlineTimer) clearTimeout(onlineTimer);
+    const query = String(q || "").trim();
+    if (query.length < 3) return;
+    const local = searchFoods(query, 12);
+    if (local.length >= 8) return;
+    onlineTimer = setTimeout(() => runOnlineSearch(query, false), 450);
+  }
+  function runOnlineSearch(q, force) {
+    const cat = window.PPCatalog;
+    const query = String(q || "").trim();
+    if (!cat || !cat.searchOpenFoodFacts) return;
+    if (query.length < 2) return;
+    if (!force) {
+      const local = searchFoods(query, 12);
+      if (local.length >= 8) return;
+    }
+    foodsOnlineStatus = "Searching Open Food Facts…";
+    foodsOnlineError = "";
+    const box = document.getElementById("search-results") || document.getElementById("sheet-results");
+    if (box && !document.getElementById("sheet-q")) {
+      box.innerHTML = renderFoodResults(query);
+      bindResults(box);
+    }
+    cat
+      .searchOpenFoodFacts(query)
+      .then((rows) => {
+        if (rows && rows.length) {
+          rememberFood(rows[0]);
+          rows.forEach(rememberFood);
+          foodsOnlineStatus = "Added " + rows.length + " result" + (rows.length === 1 ? "" : "s") + " from Open Food Facts.";
+        } else {
+          foodsOnlineStatus = "No online matches with complete calories and macros.";
+        }
+        foodsOnlineError = "";
+        if (sheet && (sheet.type === "log-food" || sheet.type === "recipe-edit")) render();
+        else if (tab === "foods") {
+          const results = document.getElementById("search-results");
+          if (results) {
+            results.innerHTML = renderFoodResults(foodsQuery);
+            bindResults(results);
+          }
+        }
+      })
+      .catch((err) => {
+        foodsOnlineStatus = "";
+        foodsOnlineError = "Online search is unavailable right now. You can still use the built-in list, or try again later.";
+        console.warn(err);
+        if (sheet && sheet.type === "log-food") render();
+        else if (tab === "foods") {
+          const results = document.getElementById("search-results");
+          if (results) {
+            results.innerHTML = renderFoodResults(foodsQuery);
+            bindResults(results);
+          }
+        }
+      });
+  }
   function handleAct(act, el) {
     const today = C.localISODate();
     if (act === "goto-profile") return goProfile();
@@ -2569,8 +2877,34 @@
       return;
     }
     if (act === "close-sheet") {
+      stopBarcodeScan();
       sheet = null;
       render();
+      return;
+    }
+    if (act === "foods-filter") {
+      foodsFilter = el.getAttribute("data-filter") || "all";
+      foodsOnlineStatus = "";
+      foodsOnlineError = "";
+      render();
+      scheduleOnlineSearch(foodsQuery);
+      return;
+    }
+    if (act === "search-online") {
+      runOnlineSearch(sheet && (sheet.type === "log-food" || sheet.type === "recipe-edit") ? sQuery() : foodsQuery, true);
+      return;
+    }
+    if (act === "open-barcode") {
+      stopBarcodeScan();
+      sheet = { type: "barcode", code: "", barcodeError: "", returnTo: sheet && sheet.type === "log-food" ? "log-food" : "foods", meal: (sheet && sheet.meal) || "breakfast" };
+      render();
+      startBarcodeScan();
+      return;
+    }
+    if (act === "lookup-barcode") {
+      const input = document.getElementById("barcode-manual");
+      const code = input ? input.value : (sheet && sheet.code) || "";
+      lookupBarcodeCode(code);
       return;
     }
     if (act === "day-prev") {

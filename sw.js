@@ -1,5 +1,5 @@
 /* Prep & Progress service worker — cache-first app shell for offline use. */
-const VERSION = "pp-v4-2026-11-12-magiclink";
+const VERSION = "pp-v5-2026-11-12-brands";
 const ASSETS = [
   "./",
   "./index.html",
@@ -8,9 +8,12 @@ const ASSETS = [
   "./js/achievements.js",
   "./js/config.js",
   "./js/sync.js",
+  "./js/catalog.js",
   "./js/app.js",
   "./manifest.webmanifest",
   "./data/foods.json",
+  "./data/restaurants.json",
+  "./data/grocery.json",
   "./data/import-template.csv",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

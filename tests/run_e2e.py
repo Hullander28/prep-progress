@@ -200,9 +200,19 @@ def run_chromium(browser, url, results):
     page.goto(url, wait_until="networkidle")
     page.wait_for_selector("text=Prep & Progress", timeout=15000)
     wait_app(page)
+    page.wait_for_function("() => window.PPApp.foods().some(f => f.kind === 'grocery')", timeout=25000)
     food_count = page.evaluate("() => window.PPApp.foods().length")
     results["food_count"] = food_count
     assert food_count >= 7000, food_count
+    kinds = page.evaluate("""() => {
+      const foods = window.PPApp.foods();
+      const out = { restaurant: 0, grocery: 0, basic: 0 };
+      foods.forEach((f) => { out[f.kind || 'basic'] = (out[f.kind || 'basic'] || 0) + 1; });
+      return out;
+    }""")
+    results["food_kinds"] = kinds
+    assert kinds["grocery"] >= 1000, kinds
+    assert kinds["restaurant"] >= 200, kinds
     hits = page.evaluate("""(q) => window.PPApp.searchFoods(q, 10).map(f => f.name)""", "chicken breast")
     results["search_chicken"] = hits
     assert any("chicken" in n.lower() and "breast" in n.lower() for n in hits), hits
@@ -217,6 +227,33 @@ def run_chromium(browser, url, results):
     page.fill("#foods-q", "banana")
     page.wait_for_timeout(200)
     assert page.locator("text=Bananas, raw").first.is_visible()
+    assert page.locator("button.chip", has_text="Restaurants").first.is_visible()
+    assert page.locator("button.chip", has_text="Grocery").first.is_visible()
+    assert page.locator("button.chip", has_text="Basic").first.is_visible()
+
+    page.fill("#foods-q", "mcdonald")
+    page.wait_for_timeout(250)
+    assert page.locator(".pill.kind-restaurant").first.is_visible()
+    mcd = page.evaluate("""() => window.PPApp.searchFoods('mcdonald', 8, 'restaurant').map(f => f.name)""")
+    results["search_mcdonalds"] = mcd
+    assert mcd and any("mcdonald" in n.lower() for n in mcd), mcd
+
+    page.locator("button.chip", has_text="Grocery").click()
+    page.wait_for_timeout(150)
+    page.fill("#foods-q", "chobani")
+    page.wait_for_timeout(250)
+    assert page.locator(".pill.kind-grocery").first.is_visible()
+    groc = page.evaluate("""() => window.PPApp.searchFoods('chobani', 8, 'grocery').map(f => ({name: f.name, brand: f.brand, kind: f.kind}))""")
+    results["search_chobani"] = groc
+    assert groc and all(x["kind"] == "grocery" for x in groc), groc
+
+    page.locator("[data-act='open-barcode']").first.click()
+    page.wait_for_selector("#barcode-manual")
+    assert page.locator("text=Look up barcode").first.is_visible()
+    results["barcode_sheet"] = True
+    page.locator("[data-act='close-sheet']").first.click()
+    page.wait_for_timeout(150)
+    page.locator("button.chip", has_text="All").click()
 
     page.reload(wait_until="networkidle")
     page.wait_for_function("() => window.PPApp && window.PPApp.getState().profile", timeout=15000)
@@ -339,6 +376,8 @@ def run_chromium(browser, url, results):
     page.evaluate("() => window.PPApp.setTab('profile')")
     page.wait_for_selector("#save-progress")
     assert page.locator("text=Save your progress").first.is_visible()
+    assert page.locator("#food-credits").first.is_visible()
+    assert page.locator("text=Open Food Facts").first.is_visible()
     assert page.locator("text=Sign in with email").first.is_visible()
     page.locator("[data-act='open-signin']").first.click()
     page.wait_for_selector("#auth-email")
@@ -395,18 +434,30 @@ def run_webkit(p, url, results):
     page.goto(file_url, wait_until="load", timeout=20000)
     import json
     foods = json.loads((ROOT / "data" / "foods.json").read_text())
+    restaurants = json.loads((ROOT / "data" / "restaurants.json").read_text())
+    grocery = json.loads((ROOT / "data" / "grocery.json").read_text())
     page.wait_for_function("() => window.PPApp && window.PPApp.unpackFoods", timeout=15000)
     page.evaluate(
-        """(data) => {
-          window.PPApp.unpackFoods(data);
+        """(([foods, restaurants, grocery]) => {
+          window.PPApp.unpackFoods(foods);
+          window.PPApp.unpackFoods(restaurants, { kind: "restaurant", source: "usda-fndds" });
+          window.PPApp.unpackFoods(grocery, { kind: "grocery", source: "usda-branded" });
           if (window.PPApp.render) window.PPApp.render();
-        }""",
-        foods,
+        })""",
+        [foods, restaurants, grocery],
     )
-    page.wait_for_function("() => window.PPApp.foods().length > 0", timeout=15000)
+    page.wait_for_function("() => window.PPApp.foods().length > 8000", timeout=15000)
     page.wait_for_selector("text=Prep & Progress", timeout=15000)
     results["webkit_load"] = "file://"
     results["webkit_foods"] = page.evaluate("() => window.PPApp.foods().length")
+    results["webkit_kinds"] = page.evaluate("""() => {
+      const out = { restaurant: 0, grocery: 0, basic: 0 };
+      window.PPApp.foods().forEach((f) => { out[f.kind || 'basic'] = (out[f.kind || 'basic'] || 0) + 1; });
+      return out;
+    }""")
+    results["webkit_mcd"] = page.evaluate("() => window.PPApp.searchFoods('mcdonald', 5, 'restaurant').length")
+    assert results["webkit_kinds"]["grocery"] >= 1000, results["webkit_kinds"]
+    assert results["webkit_mcd"] >= 1, results["webkit_mcd"]
 
     # Onboarding
     page.get_by_role("button", name="Let’s get started").click()
