@@ -1181,3 +1181,44 @@ code {
 @media (prefers-reduced-motion: reduce) {
   .confetti { display: none !important; }
 }
+
+
+/* Cloud account / sync */
+.account-card .sync-status,
+.sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  font-weight: 650;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--sage-soft);
+  color: var(--sage);
+}
+.sync-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.sync-status.syncing {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+.sync-status.offline,
+.sync-status.error {
+  background: var(--rose-soft, color-mix(in srgb, var(--rose) 18%, transparent));
+  color: var(--rose);
+}
+.nudge-card h2,
+.account-card h2 { margin-bottom: 6px; }
+#auth-code {
+  letter-spacing: 0.35em;
+  font-size: 1.25rem;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

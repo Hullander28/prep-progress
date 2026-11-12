@@ -332,6 +332,24 @@ def run_chromium(browser, url, results):
     assert backup.get("profile", {}).get("goalWeeks") == 20
     results["backup_version"] = backup.get("version")
 
+    # Cloud login is configured and shown, but optional
+    enabled = page.evaluate("() => !!(window.PPCloud && window.PPCloud.isEnabled())")
+    results["cloud_enabled"] = enabled
+    assert enabled
+    page.evaluate("() => window.PPApp.setTab('profile')")
+    page.wait_for_selector("#save-progress")
+    assert page.locator("text=Save your progress").first.is_visible()
+    assert page.locator("text=Sign in with email").first.is_visible()
+    page.locator("[data-act='open-signin']").first.click()
+    page.wait_for_selector("#auth-email")
+    assert page.locator("text=Email me a sign-in link").first.is_visible()
+    assert page.locator("text=Have a code?").first.is_visible()
+    page.locator("[data-act='signin-code']").click()
+    page.wait_for_selector("#auth-code")
+    results["signin_sheet"] = True
+    results["signin_code_option"] = True
+    page.locator("[data-act='close-sheet']").first.click()
+
     # Metric + maintain (goal = current) should not crash
     edge = page.evaluate("""() => {
       const t0 = window.PPCalc.computeTargets({

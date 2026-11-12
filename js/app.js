@@ -132,8 +132,73 @@
       return defaultState();
     }
   }
-  function saveState() {
+  function saveState(opts) {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    if ((!opts || !opts.skipSync) && rootCloud()) rootCloud().notifyLocalChange();
+  }
+  function rootCloud() {
+    return window.PPCloud && window.PPCloud.isEnabled() ? window.PPCloud : null;
+  }
+
+  let syncNudge = false;
+  let authBusy = false;
+  let signedInViaLinkNote = false;
+
+  function isStandaloneApp() {
+    try {
+      if (window.navigator && window.navigator.standalone) return true;
+      if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return true;
+    } catch (err) {}
+    return false;
+  }
+
+  function iphoneSignInNote() {
+    return (
+      '<p class="hint">On iPhone, a Home Screen app doesn’t share sign-in with Safari. The email link will open in Safari — stay there for cloud backup. This Home Screen copy keeps working on the phone only. On Android, the installed app usually opens the link itself.</p>'
+    );
+  }
+
+  function accountCard() {
+    const cloud = window.PPCloud;
+    if (!cloud || !cloud.isEnabled()) return "";
+    if (!cloud.isSignedIn()) {
+      return (
+        '<div class="card account-card" id="save-progress">' +
+        "<h2>Save your progress</h2>" +
+        '<p class="soft" style="margin-top:0">Sign in with email to back up your journal, plan, and awards to the cloud. This app still works fully on this phone without an account.</p>' +
+        '<button class="btn btn-primary btn-block" data-act="open-signin">Sign in with email</button></div>'
+      );
+    }
+    const st = cloud.getStatus();
+    const cls = !st.online || st.status === "offline" ? "offline" : st.status === "syncing" ? "syncing" : st.status === "error" ? "error" : "saved";
+    return (
+      '<div class="card account-card">' +
+      "<h2>Your account</h2>" +
+      '<p class="soft" style="margin-top:0">' +
+      esc(cloud.signedInEmail()) +
+      "</p>" +
+      '<div class="sync-status ' +
+      cls +
+      '">' +
+      esc(cloud.labelForStatus() || "Saved") +
+      "</div>" +
+      '<div class="btn-row" style="margin-top:12px"><button class="btn btn-ghost" data-act="sign-out">Sign out</button>' +
+      '<button class="btn btn-danger" data-act="delete-account">Delete cloud account…</button></div>' +
+      '<p class="tiny muted" style="margin:10px 0 0">Signing out keeps the data on this phone. Deleting the cloud account removes the backup and sign-in on the server. You can still export a JSON backup below.</p></div>'
+    );
+  }
+
+  function syncNudgeCard() {
+    const cloud = window.PPCloud;
+    if (!syncNudge || !cloud || !cloud.isEnabled() || cloud.isSignedIn()) return "";
+    if (state.settings && state.settings.dismissedSyncNudge) return "";
+    return (
+      '<div class="card nudge-card">' +
+      "<h2>Save your progress?</h2>" +
+      '<p class="soft" style="margin-top:0">You can keep everything on this phone, or get a one-time email code so a new device can pick up your journal and plan.</p>' +
+      '<div class="btn-row"><button class="btn btn-primary" data-act="open-signin">Sign in with email</button>' +
+      '<button class="btn btn-ghost" data-act="dismiss-nudge">Not now</button></div></div>'
+    );
   }
   function uid(prefix) {
     return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -896,6 +961,13 @@
         ? greeting()
         : prettyDate(dayISO);
     let html = topbar(datedTitle(), esc(sub), dateNavBtns());
+    html += syncNudgeCard();
+    if (signedInViaLinkNote && rootCloud() && rootCloud().isSignedIn()) {
+      html +=
+        '<div class="card nudge-card" id="safari-signin-note"><h2>You’re signed in here</h2>' +
+        '<p class="soft" style="margin-top:0">Cloud backup is on in this browser. On iPhone, the Home Screen icon is a separate copy and won’t see this sign-in — use this Safari (or Chrome) page for the synced journal. On Android, an installed app usually receives the link itself.</p>' +
+        '<button class="btn btn-ghost btn-block" data-act="dismiss-link-note">Got it</button></div>';
+    }
     html += '<div class="card rings-card">';
     html += '<div class="rings">';
     html += '<div class="ring-wrap">' + ringSVG(kcalPct, "var(--accent)", 160, 13);
@@ -1504,7 +1576,9 @@
       html += '<div class="card"><h2>Add to Home screen</h2><p class="soft tiny">On iPhone: open this app in <strong>Safari</strong>, tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>. On Android (Chrome or Samsung Internet): menu → <strong>Add to Home screen</strong> or <strong>Install app</strong>. Needs https or localhost — not a raw file. After the first visit, it works offline.</p></div>';
     }
 
-    html += '<div class="card"><h2>Backup</h2><p class="hint" style="margin-top:0">Your journal, meals, weight, recipes, and profile travel together.</p><div class="btn-row">';
+    html += accountCard();
+
+    html += '<div class="card"><h2>Backup</h2><p class="hint" style="margin-top:0">Your journal, meals, weight, recipes, and profile travel together. A signed-in account is optional — JSON export still works offline.</p><div class="btn-row">';
     html += '<button class="btn btn-outline" data-act="export-backup">Export JSON</button>';
     html += '<button class="btn btn-outline" data-act="export-journal-csv">Journal CSV</button></div>';
     html += '<label class="btn btn-ghost btn-block" style="margin-top:10px">Import backup JSON<input type="file" id="import-backup" accept="application/json,.json" hidden></label></div>';
@@ -1735,6 +1809,9 @@
           state.plan = buildPlan(C.localISODate(), t.weightLb);
           saveState();
           tab = "today";
+          if (rootCloud() && !rootCloud().isSignedIn() && !(state.settings && state.settings.dismissedSyncNudge)) {
+            syncNudge = true;
+          }
           toast("Welcome. Your journal starts today.");
         }
       });
@@ -1777,6 +1854,8 @@
     else if (s.type === "recipe-edit") inner += sheetRecipeEdit();
     else if (s.type === "log-recipe") inner += sheetLogRecipe();
     else if (s.type === "weigh-in") inner += sheetWeighIn();
+    else if (s.type === "sign-in") inner += sheetSignIn();
+    else if (s.type === "sync-conflict") inner += sheetSyncConflict();
     else inner += "<h2>Hmm</h2><p>Something went missing.</p>";
     return '<div class="backdrop" data-act="close-sheet"></div><div class="sheet" role="dialog" aria-modal="true">' + inner + "</div>";
   }
@@ -2070,6 +2149,61 @@
       });
     return toCSV(rows);
   }
+  function sheetSignIn() {
+    const s = sheet;
+    const step = s.step || "email";
+    let html = "<h2>Sign in with email</h2>";
+    if (s.error) html += '<div class="note">' + esc(s.error) + "</div>";
+    if (step === "email") {
+      html += '<p class="hint" style="margin-top:0">We’ll email a sign-in link. Open it on this phone to connect your backup.</p>';
+      html += iphoneSignInNote();
+      html += '<label class="field">Email<input id="auth-email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" value="' + esc(s.email || "") + '"></label>';
+      html += '<button class="btn btn-primary btn-block" data-act="send-otp"' + (authBusy ? " disabled" : "") + ">" + (authBusy ? "Sending…" : "Email me a sign-in link") + "</button>";
+      html += '<button class="btn btn-ghost btn-block" data-act="signin-code">Have a code?</button>';
+    } else if (step === "check") {
+      html += '<p class="soft">Check your email and tap the link on this phone. We sent it to <strong>' + esc(s.email) + "</strong>.</p>";
+      html += iphoneSignInNote();
+      html += '<button class="btn btn-ghost btn-block" data-act="send-otp"' + (authBusy ? " disabled" : "") + ">" + (authBusy ? "Sending…" : "Resend link") + "</button>";
+      html += '<button class="btn btn-ghost btn-block" data-act="signin-code">Have a code?</button>';
+      html += '<button class="btn btn-ghost btn-block" data-act="signin-email">Use a different email</button>';
+    } else {
+      html += '<p class="hint" style="margin-top:0">If your email includes a 6-digit code, enter it here. Default emails only have a link — that’s okay, use the link instead.</p>';
+      html += '<label class="field">Code<input id="auth-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" pattern="[0-9]*" placeholder="123456"></label>';
+      html += '<button class="btn btn-primary btn-block" data-act="verify-otp"' + (authBusy ? " disabled" : "") + ">" + (authBusy ? "Checking…" : "Verify code") + "</button>";
+      html += '<button class="btn btn-ghost btn-block" data-act="signin-check">Back to the email link</button>';
+      html += '<button class="btn btn-ghost btn-block" data-act="signin-email">Use a different email</button>';
+    }
+    html += '<p class="disclaimer" style="margin-top:14px">Optional. Your journal already lives on this phone, even if you skip this.</p>';
+    return html;
+  }
+
+  function sheetSyncConflict() {
+    const s = sheet;
+    const fmt = (iso) => {
+      if (!iso) return "unknown time";
+      try {
+        return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      } catch (err) {
+        return String(iso);
+      }
+    };
+    const summarize = (data) => {
+      if (!data) return "No copy";
+      const logs = data.logs ? Object.keys(data.logs).length : 0;
+      const weights = (data.weights && data.weights.length) || 0;
+      const recipes = (data.recipes && data.recipes.length) || 0;
+      return logs + " journal days · " + weights + " weigh-ins · " + recipes + " recipes";
+    };
+    let html = "<h2>Two copies of your data</h2>";
+    html += '<p class="soft" style="margin-top:0">This phone and your cloud backup both have a journal. Pick which one to keep. After this, the newest save wins automatically.</p>';
+    html += '<div class="card" style="margin:10px 0"><div class="muted tiny">This phone</div><p class="soft" style="margin:4px 0 0">' + esc(summarize(s.local)) + '</p><p class="tiny muted">Edited ' + esc(fmt(s.localAt)) + "</p></div>";
+    html += '<div class="card"><div class="muted tiny">Cloud</div><p class="soft" style="margin:4px 0 0">' + esc(summarize(s.cloud)) + '</p><p class="tiny muted">Saved ' + esc(fmt(s.cloudAt)) + "</p></div>";
+    html += '<button class="btn btn-primary btn-block" data-act="resolve-conflict" data-choice="local">Keep this phone’s data</button>';
+    html += '<button class="btn btn-outline btn-block" data-act="resolve-conflict" data-choice="cloud">Use the cloud copy</button>';
+    html += '<button class="btn btn-ghost btn-block" data-act="resolve-conflict" data-choice="newest">Use whichever is newer</button>';
+    return html;
+  }
+
   function backupJSON() {
     return JSON.stringify(
       {
@@ -2281,6 +2415,26 @@
         state.profile.goalWeight = Number(pGoal.value);
         render();
       });
+    }
+    const authEmail = document.getElementById("auth-email");
+    if (authEmail) {
+      authEmail.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          handleAct("send-otp", authEmail);
+        }
+      });
+      setTimeout(() => authEmail.focus(), 50);
+    }
+    const authCode = document.getElementById("auth-code");
+    if (authCode) {
+      authCode.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          handleAct("verify-otp", authCode);
+        }
+      });
+      setTimeout(() => authCode.focus(), 50);
     }
     const jdate = document.getElementById("journal-date");
     if (jdate) {
@@ -2945,6 +3099,138 @@
       toast("Journal CSV ready.");
       return;
     }
+    if (act === "open-signin") {
+      if (!rootCloud()) return;
+      sheet = { type: "sign-in", step: "email", email: "", error: "" };
+      render();
+      return;
+    }
+    if (act === "signin-email") {
+      sheet = { type: "sign-in", step: "email", email: (sheet && sheet.email) || "", error: "" };
+      render();
+      return;
+    }
+    if (act === "signin-code") {
+      sheet = { type: "sign-in", step: "code", email: (sheet && sheet.email) || "", error: "" };
+      render();
+      return;
+    }
+    if (act === "signin-check") {
+      sheet = { type: "sign-in", step: "check", email: (sheet && sheet.email) || "", error: "" };
+      render();
+      return;
+    }
+    if (act === "dismiss-link-note") {
+      signedInViaLinkNote = false;
+      render();
+      return;
+    }
+    if (act === "dismiss-nudge") {
+      syncNudge = false;
+      if (!state.settings) state.settings = { theme: "dark", palette: "midnight" };
+      state.settings.dismissedSyncNudge = true;
+      saveState();
+      render();
+      return;
+    }
+    if (act === "send-otp") {
+      const cloud = rootCloud();
+      if (!cloud) return;
+      const input = document.getElementById("auth-email");
+      const email = ((input && input.value) || (sheet && sheet.email) || "").trim();
+      authBusy = true;
+      sheet = Object.assign({}, sheet || { type: "sign-in" }, { email: email, error: "" });
+      render();
+      cloud
+        .sendOtp(email)
+        .then((addr) => {
+          authBusy = false;
+          sheet = { type: "sign-in", step: "check", email: addr, error: "" };
+          toast("Link sent. Check your email.");
+        })
+        .catch((err) => {
+          authBusy = false;
+          sheet = Object.assign({}, sheet || { type: "sign-in" }, { email: email, error: err.message || "Could not send the code." });
+          render();
+        });
+      return;
+    }
+    if (act === "verify-otp") {
+      const cloud = rootCloud();
+      if (!cloud) return;
+      const code = ((document.getElementById("auth-code") || {}).value || "").trim();
+      authBusy = true;
+      if (sheet) sheet.error = "";
+      render();
+      cloud
+        .verifyOtp(sheet && sheet.email, code)
+        .then(() => cloud.afterLogin())
+        .then((result) => {
+          authBusy = false;
+          syncNudge = false;
+          if (state.settings) state.settings.dismissedSyncNudge = true;
+          saveState({ skipSync: true });
+          if (result && result.action === "conflict") {
+            /* sheet is opened by onConflict */
+            return;
+          }
+          sheet = null;
+          toast(result && result.action === "pull" ? "Signed in. Cloud copy loaded." : "Signed in. Progress will be saved to the cloud.");
+          render();
+        })
+        .catch((err) => {
+          authBusy = false;
+          if (sheet) sheet.error = err.message || "That code didn't work.";
+          render();
+        });
+      return;
+    }
+    if (act === "sign-out") {
+      const cloud = rootCloud();
+      if (!cloud) return;
+      cloud.signOut().then(() => {
+        toast("Signed out. Your data is still on this phone.");
+        render();
+      });
+      return;
+    }
+    if (act === "delete-account") {
+      const cloud = rootCloud();
+      if (!cloud) return;
+      if (!confirm("Delete your Prep & Progress cloud account and backup? This cannot be undone. Data on this phone is not erased unless you also choose that.")) return;
+      const alsoLocal = confirm("Also erase the copy on this phone? Cancel to keep local data and only remove the cloud account.");
+      cloud
+        .deleteAccount()
+        .then(() => {
+          if (alsoLocal) {
+            state = defaultState();
+            localStorage.removeItem(STORE_KEY);
+            onb = { step: 0, draft: emptyDraft() };
+            tab = "today";
+            toast("Cloud account and this phone’s data were deleted.");
+          } else {
+            toast("Cloud account deleted. This phone still has your data.");
+          }
+          sheet = null;
+          render();
+        })
+        .catch((err) => toast(err.message || "Could not delete the account."));
+      return;
+    }
+    if (act === "resolve-conflict") {
+      const cloud = rootCloud();
+      const choice = el.getAttribute("data-choice");
+      if (!cloud || !choice) return;
+      cloud
+        .syncNow(choice)
+        .then(() => {
+          sheet = null;
+          toast(choice === "cloud" ? "Cloud copy is now on this phone." : "This phone’s data is now the cloud copy.");
+          render();
+        })
+        .catch((err) => toast(err.message || "Could not finish the merge."));
+      return;
+    }
     if (act === "reset-data") {
       if (!confirm("Erase your profile, journal, and everything in this app on this device? This cannot be undone.")) return;
       state = defaultState();
@@ -2992,6 +3278,52 @@
       state.plan = buildPlan(C.localISODate(), t && t.weightLb);
       saveState();
     }
+    if (window.PPCloud && window.PPCloud.isEnabled()) {
+      let boot = null;
+      try {
+        boot = await window.PPCloud.init({
+          getState: () => state,
+          applyState: (data) => {
+            const next = defaultState();
+            next.profile = data.profile || null;
+            next.logs = data.logs || {};
+            next.weights = data.weights || [];
+            next.recipes = data.recipes || [];
+            next.customFoods = data.customFoods || [];
+            next.plan = data.plan || null;
+            next.settings = Object.assign({ theme: "dark", palette: "midnight" }, data.settings || {});
+            next.achievements = Object.assign({ unlocked: {}, seen: {} }, data.achievements || {});
+            state = next;
+            saveState({ skipSync: true });
+            applyTheme();
+          },
+          onStatus: () => {
+            const el = document.querySelector(".sync-status");
+            if (!el || !window.PPCloud) return;
+            const st = window.PPCloud.getStatus();
+            const cls = !st.online || st.status === "offline" ? "offline" : st.status === "syncing" ? "syncing" : st.status === "error" ? "error" : "saved";
+            el.className = "sync-status " + cls;
+            el.textContent = window.PPCloud.labelForStatus() || "Saved";
+          },
+          onSession: () => {},
+          onConflict: (info) => {
+            sheet = {
+              type: "sync-conflict",
+              local: info.local,
+              cloud: info.cloud,
+              localAt: info.localAt,
+              cloudAt: info.cloudAt,
+            };
+            render();
+          },
+        });
+      } catch (err) {
+        console.warn("Cloud sync init failed", err);
+      }
+      if (boot && boot.via && window.PPCloud && window.PPCloud.isSignedIn()) {
+        signedInViaLinkNote = true;
+      }
+    }
     render();
     await loadFoods();
     render();
@@ -3038,6 +3370,7 @@
     STORE_KEY,
     MEALS,
     achievements: () => (window.PPAchievements ? window.PPAchievements.compute(state, { today: C.localISODate(), targets: targets() }) : null),
+    cloud: () => window.PPCloud || null,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

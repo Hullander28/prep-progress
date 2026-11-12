@@ -57,6 +57,12 @@ In onboarding or **You**, pick a target date or a chip (8 / 12 / 16 / 24 / 36 / 
 
 The trophy in the header (and a section on **Plan**) opens streaks and badges. Logging, protein, weigh-in, and prep streaks show current and best. Badges cover firsts, 7/30/100-day logging streaks, progress toward your goal at a sustainable pace, weekly milestones, journal notes, and consistency levels/XP. Extreme deficits or too-fast weight change do not unlock goal awards. Unlocks are recomputed from your data (including after a backup import) and celebrate with a short toast — confetti is skipped when you prefer reduced motion.
 
+## Cloud backup (optional)
+
+The app works fully offline on your phone with no account. If you want a cloud backup, sign in with email from **You** (or the short prompt after setup). You’ll get a 6-digit code — that’s more reliable on iPhone than a sign-in link, which often opens Safari instead of the installed app.
+
+Setup for the hosted copy is in `supabase/SETUP.md` (SQL, Auth site URL, and the email template). Your journal, plan, and awards sync; the USDA food database stays on the device.
+
 ## Color schemes
 
 Choose a palette in **You → Appearance**. Each has a light and dark variant (or follow the system). Text colors meet WCAG AA contrast against backgrounds and cards.
@@ -93,6 +99,7 @@ Any static host (Netlify, Cloudflare Pages, Render static) also works. It must b
 ```bash
 node tests/test_calc.js
 node tests/test_achievements.js
+node tests/test_sync.js
 node tests/test_foods.js
 python3 tests/run_e2e.py
 ```
