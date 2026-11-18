@@ -404,6 +404,7 @@
       weights: s.weights || [],
       recipes: s.recipes || [],
       customFoods: s.customFoods || [],
+      recentsHidden: s.recentsHidden || {},
       plan: s.plan || null,
       settings: s.settings || {},
       achievements: s.achievements || { unlocked: {}, seen: {} },

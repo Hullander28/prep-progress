@@ -21,6 +21,7 @@ Then open `http://<your-computer-ip>:8080` on the phone (same Wi‑Fi). In Chrom
 - **Today** — calorie and macro rings, meals you can log, jump into the journal
 - **Journal** — calendar, a scrollable history with time / meal / food / portion / macros, daily totals vs targets, edit or delete entries, optional notes (hunger, mood, how you felt), re-log an entry or a whole meal, CSV export
 - **Prep** — batch recipes with per-serving macros, then log servings to a day
+- **Recent** — the foods you logged most recently show first when you add food (Log a food sheet and the Foods tab). Tap a row to log it again with the same portion (Undo in the toast), tap the pencil to change the portion, or × to remove it from the list
 - **Foods** — search USDA basics, fast-food restaurant items, and name-brand grocery products (with brand, serving size, and type badges); filter All / Restaurants / Grocery / Basic; optional online search and barcode lookup; add/import your own
 - **Weight** — weigh-ins, trend chart, 7-day average, progress to goal
 - **Plan** — weekly weight milestones at the pace you pick, habit checkoffs, and awards
@@ -107,6 +108,7 @@ node tests/test_achievements.js
 node tests/test_sync.js
 node tests/test_foods.js
 node tests/test_catalog.js
+node tests/test_recents.js
 python3 tests/test_barcode_scan.py
 python3 tests/run_e2e.py
 ```

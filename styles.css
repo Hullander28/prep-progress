@@ -1254,3 +1254,41 @@ code {
 label.btn { display: flex; align-items: center; justify-content: center; cursor: pointer; }
 label.btn input[type="file"][hidden] { display: none; }
 #start-camera-btn { margin-bottom: 8px; }
+
+/* Recent foods (quick log) */
+.recent-list { margin: 0 0 6px; }
+.recent-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 4px 4px; }
+.recent-head h3 { margin: 0; font-size: 0.95rem; letter-spacing: -0.01em; }
+.recent-head svg { width: 12px; height: 12px; vertical-align: -1px; }
+.recent-row { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); }
+.recent-main {
+  flex: 1; min-width: 0; min-height: 56px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 4px; text-align: left; background: none; color: var(--ink);
+  -webkit-tap-highlight-color: transparent;
+}
+.recent-main:active { opacity: 0.7; }
+.recent-plus {
+  width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--accent, var(--ink)) 16%, transparent);
+  color: var(--accent, var(--ink));
+}
+.recent-plus svg { width: 18px; height: 18px; }
+.recent-text { display: flex; flex-direction: column; min-width: 0; }
+.recent-text .name { font-weight: 650; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.recent-text .meta { font-size: 0.8rem; color: var(--muted); }
+.recent-text .pill { font-size: 0.68rem; padding: 2px 8px; font-weight: 700; }
+.recent-btn {
+  width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px;
+  display: grid; place-items: center; background: none; color: var(--muted);
+  -webkit-tap-highlight-color: transparent;
+}
+.recent-btn:active { background: var(--line); }
+.recent-btn svg { width: 20px; height: 20px; }
+.results-head { margin: 12px 4px 0; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.toast.has-undo { display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 16px; text-align: left; }
+.toast-undo {
+  min-height: 44px; min-width: 64px; padding: 0 16px; border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); font-weight: 800;
+}

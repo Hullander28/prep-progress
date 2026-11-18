@@ -183,6 +183,101 @@ def stitch_palettes(paths_labels, dest):
     canvas.save(dest, optimize=True)
 
 
+COUNT_JS = "() => Object.values(window.PPApp.getState().logs).flatMap(d => (d.breakfast||[]).concat(d.lunch||[], d.dinner||[], d.snack||[])).length"
+
+
+def run_recents_checks(page, results, prefix, screenshot=False):
+    """Recent list: shown up front, one-tap re-log + Undo, edit portion, remove, Recent chip."""
+    page.evaluate("() => { window.PPApp.setDay(window.PPCalc.localISODate()); window.PPApp.setTab('foods'); }")
+    page.wait_for_selector("#foods-q")
+    page.fill("#foods-q", "")
+    page.wait_for_selector("#recent-list .recent-row", timeout=5000)
+    rec = page.evaluate("() => window.PPApp.recentFoods('', 20)")
+    keys = [r["key"] for r in rec]
+    assert keys and len(keys) == len(set(keys)), keys
+    rows = page.locator("#search-results .recent-row").count()
+    assert rows == len(rec), (rows, len(rec))
+    results[f"{prefix}_recent_count"] = len(rec)
+
+    # Touch targets
+    sizes = page.evaluate("""() => [...document.querySelectorAll('#recent-list .recent-main, #recent-list .recent-btn')]
+      .map(b => { const r = b.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; })""")
+    assert sizes and all(w >= 44 and h >= 44 for w, h in sizes), sizes
+
+    # One tap = re-log with last portion, into its last meal; toast + Undo
+    first = rec[0]
+    before = page.evaluate(COUNT_JS)
+    page.locator("#recent-list .recent-main").first.click()
+    page.wait_for_selector(".toast .toast-undo")
+    after = page.evaluate(COUNT_JS)
+    assert after == before + 1, (before, after)
+    last = page.evaluate("""(meal) => { const d = window.PPApp.getState().logs[window.PPCalc.localISODate()]; const a = d[meal]; return a[a.length-1]; }""", first["meal"])
+    assert last["name"] == first["name"] and last["grams"] == first["grams"], (last, first)
+    page.locator(".toast .toast-undo").click()
+    page.wait_for_timeout(150)
+    assert page.evaluate(COUNT_JS) == before
+    results[f"{prefix}_recent_relog_undo"] = True
+
+    # Log sheet: Recent shows first; tap logs into the chosen meal
+    page.locator(".fab").click()
+    page.wait_for_selector("#sheet-q")
+    page.wait_for_selector("#sheet-results #recent-list .recent-row")
+    page.select_option("#s-meal", "snack")
+    page.locator("#sheet-results .recent-main").first.click()
+    page.wait_for_selector(".toast .toast-undo")
+    snack = page.evaluate("() => (window.PPApp.getState().logs[window.PPCalc.localISODate()].snack || []).map(e => e.name)")
+    assert first["name"] in snack, snack
+    assert page.locator("#sheet-q").count(), "sheet stays open for more quick logs"
+    assert page.locator("#s-meal").input_value() == "snack"
+    results[f"{prefix}_recent_sheet_meal"] = "snack"
+
+    # Pencil: portion editor prefilled with last grams
+    page.locator("#sheet-results .recent-row").first.locator("[data-act='recent-edit']").click()
+    page.wait_for_selector("[data-act='confirm-log'], [data-act='confirm-log-recipe']")
+    if page.locator("#s-grams").count():
+        g = float(page.locator("#s-grams").input_value())
+        top = page.evaluate("() => window.PPApp.recentFoods('', 1)[0]")
+        assert abs(g - float(top["grams"])) < 0.05, (g, top)
+        results[f"{prefix}_recent_edit_grams"] = g
+    page.evaluate("""() => document.querySelector('.backdrop[data-act="close-sheet"]').click()""")
+    page.wait_for_timeout(150)
+
+    # Recent chip filters to recents only
+    page.locator("button.chip", has_text="Recent").click()
+    page.wait_for_selector("#search-results .recent-row")
+    assert page.locator("#search-results .food-row").count() == 0
+    page.locator("button.chip", has_text="All").click()
+    page.wait_for_timeout(100)
+
+    # Remove from recents
+    page.fill("#foods-q", "")
+    page.wait_for_selector("#recent-list .recent-row")
+    gone_key = page.evaluate("() => window.PPApp.recentFoods('', 1)[0].key")
+    page.locator("#recent-list .recent-row").first.locator("[data-act='recent-hide']").click()
+    page.wait_for_timeout(150)
+    keys2 = page.evaluate("() => window.PPApp.recentFoods('', 20).map(r => r.key)")
+    assert gone_key not in keys2, (gone_key, keys2)
+    results[f"{prefix}_recent_hide"] = True
+
+    # Every palette keeps the row readable (text color differs from row background)
+    if screenshot:
+        for pal, theme, _ in PALETTES:
+            page.evaluate("""([pal, theme]) => { const s = window.PPApp.getState(); s.settings = Object.assign({}, s.settings, { palette: pal, theme }); window.PPApp.setState(s); window.PPApp.applyTheme(); window.PPApp.setTab('foods'); }""", [pal, theme])
+            page.wait_for_selector("#recent-list .recent-row")
+            ok = page.evaluate("""() => { const el = document.querySelector('#recent-list .recent-text .name'); const c = getComputedStyle(el).color; const bg = getComputedStyle(document.querySelector('#search-results')).backgroundColor; return c !== bg && c !== 'rgba(0, 0, 0, 0)'; }""")
+            assert ok, pal
+        # Midnight mobile screenshot of the log sheet's Recent list
+        page.evaluate("""() => { const s = window.PPApp.getState(); s.settings = Object.assign({}, s.settings, { palette: 'midnight', theme: 'dark' }); window.PPApp.setState(s); window.PPApp.applyTheme(); window.PPApp.setTab('today'); }""")
+        page.wait_for_selector(".toast", state="detached", timeout=8000)
+        page.locator(".fab").click()
+        page.wait_for_selector("#sheet-results #recent-list .recent-row")
+        page.wait_for_timeout(700)
+        page.screenshot(path=str(SCREEN / "recents-midnight.png"), full_page=False)
+        page.evaluate("""() => document.querySelector('.backdrop[data-act="close-sheet"]').click()""")
+        page.evaluate("""() => { const s = window.PPApp.getState(); s.settings = Object.assign({}, s.settings, { palette: 'terracotta', theme: 'light' }); window.PPApp.setState(s); window.PPApp.applyTheme(); }""")
+        results[f"{prefix}_recent_palettes"] = True
+
+
 def run_chromium(browser, url, results):
     errors = []
     context = browser.new_context(
@@ -261,6 +356,8 @@ def run_chromium(browser, url, results):
     page.evaluate("""() => document.querySelector('.backdrop[data-act="close-sheet"]').click()""")
     page.wait_for_timeout(150)
     page.locator("button.chip", has_text="All").click()
+
+    run_recents_checks(page, results, "chromium", screenshot=True)
 
     page.reload(wait_until="networkidle")
     page.wait_for_function("() => window.PPApp && window.PPApp.getState().profile", timeout=15000)
@@ -503,6 +600,15 @@ def run_webkit(p, url, results):
     entries = page.evaluate("() => Object.values(window.PPApp.getState().logs).flatMap(d => (d.breakfast||[]).concat(d.lunch||[], d.dinner||[], d.snack||[])).length")
     assert entries >= 1, entries
     results["webkit_logging"] = entries
+
+    # Recent list on WebKit (iPhone viewport)
+    run_recents_checks(page, results, "webkit", screenshot=False)
+    page.evaluate("() => { const s = window.PPApp.getState(); s.recentsHidden = {}; window.PPApp.setState(s); window.PPApp.setTab('today'); }")
+    page.locator(".fab").click()
+    page.wait_for_selector("#sheet-results #recent-list .recent-row")
+    page.wait_for_timeout(900)
+    page.screenshot(path=str(SCREEN / "recents-iphone.png"), full_page=False)
+    page.evaluate("""() => document.querySelector('.backdrop[data-act="close-sheet"]').click()""")
 
     # Journal
     page.evaluate("() => window.PPApp.setTab('journal')")

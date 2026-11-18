@@ -30,6 +30,7 @@
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l5 5"/></svg>',
     journal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5h11.5A1.5 1.5 0 0 1 19 5v15.5H7.5A2.5 2.5 0 0 1 5 18V5.5A2 2 0 0 1 7 3.5z"/><path d="M5 18c0-1 .8-2 2.5-2H19"/><path d="M9 8h6M9 12h6"/></svg>',
     trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5h8v3a4 4 0 0 1-8 0V5z"/><path d="M8 6H6.5A2.5 2.5 0 0 0 6.5 11C7.5 11 8 10 8.5 9"/><path d="M16 6h1.5A2.5 2.5 0 0 1 17.5 11C16.5 11 16 10 15.5 9"/><path d="M12 12v3"/><path d="M9 19h6"/><path d="M10 16h4v3"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>',
     relog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 14-4.5"/><path d="M18 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 4.5"/><path d="M6 20v-4h4"/></svg>',
     barcode: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6v12M7 6v12M9 6v12M13 6v12M15 6v12M19 6v12M3 4h2M19 4h2M3 20h2M19 20h2"/></svg>',
   };
@@ -72,6 +73,7 @@
   let sheet = null; // { type, ... }
   let toastTimer = 0;
   let toastMsg = "";
+  let toastUndo = null;
   let pendingUnlocks = [];
   let confettiOn = false;
   let onb = { step: 0, draft: emptyDraft() };
@@ -96,6 +98,7 @@
       plan: null,
       settings: { theme: "dark", palette: "midnight" },
       achievements: { unlocked: {}, seen: {} },
+      recentsHidden: {},
       // Day journal notes live on each logs[date] record (note, hunger, mood, felt).
     };
   }
@@ -131,6 +134,7 @@
         weights: parsed.weights || [],
         recipes: parsed.recipes || [],
         customFoods: parsed.customFoods || [],
+        recentsHidden: parsed.recentsHidden || {},
         settings: Object.assign({ theme: "dark", palette: "midnight" }, parsed.settings || {}),
         achievements: Object.assign({ unlocked: {}, seen: {} }, parsed.achievements || {}),
       });
@@ -320,6 +324,7 @@
     return allFoods().find((f) => f.id === id) || null;
   }
   function searchFoods(q, limit, kind) {
+    if (!kind && foodsFilter === "recent") kind = "all";
     const cat = window.PPCatalog;
     if (cat && cat.search) {
       return cat.search(allFoods(), q, { limit: limit || 40, kind: kind || foodsFilter || "all" });
@@ -667,14 +672,16 @@
     return d;
   }
 
-  function toast(msg) {
+  function toast(msg, undo) {
     toastMsg = msg;
+    toastUndo = undo || null;
     render();
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       toastMsg = "";
+      toastUndo = null;
       render();
-    }, 2400);
+    }, undo ? 6000 : 2400);
   }
 
   /* ---------- Plan ---------- */
@@ -879,7 +886,11 @@
         ? '<button class="fab" data-act="fab" aria-label="Quick log a food">' + ICONS.plus + "</button>"
         : "") +
       (sheet ? renderSheet() : "") +
-      (toastMsg ? '<div class="toast" role="status">' + esc(toastMsg) + "</div>" : "") +
+      (toastMsg
+        ? '<div class="toast' + (toastUndo ? " has-undo" : "") + '" role="status"><span>' + esc(toastMsg) + "</span>" +
+          (toastUndo ? '<button type="button" class="toast-undo" data-act="toast-undo">Undo</button>' : "") +
+          "</div>"
+        : "") +
       confettiHtml;
     bindMain();
   }
@@ -1239,6 +1250,119 @@
     return html;
   }
 
+  /* ---------- Recent foods ---------- */
+  function recentFoods(q, limit) {
+    const R = window.PPRecents;
+    if (!R) return [];
+    const list = R.compute(state, { limit: limit || 20 }).map((r) => {
+      const f = r.foodId ? findFood(r.foodId) : null;
+      return Object.assign(r, { food: f, brand: (f && f.brand) || "" });
+    });
+    return R.filter(list, q);
+  }
+  function recentBadgeHtml(r) {
+    if (r.kind === "recipe") return '<span class="pill kind-custom">Recipe</span>';
+    if (r.food) return kindBadgeHtml(r.food);
+    return "";
+  }
+  function recentRowHtml(r) {
+    const portion = r.portionName || (r.grams ? fmtG(r.grams) + " g" : r.kind === "recipe" ? "1 serving" : "");
+    const meta = (r.brand ? esc(r.brand) + " · " : "") + esc(portion) + (portion ? " · " : "") + fmtKcal(r.kcal) + " kcal";
+    const canEdit = r.kind === "recipe" ? !!(state.recipes || []).find((x) => x.id === r.recipeId) : !!(r.food || r.grams);
+    const name = displayName(r.name);
+    return (
+      '<div class="recent-row" data-key="' + esc(r.key) + '">' +
+      '<button type="button" class="recent-main" data-act="recent-log" data-key="' + esc(r.key) + '" aria-label="Log ' + esc(name) + " again, " + esc(portion) + '">' +
+      '<span class="recent-plus" aria-hidden="true">' + ICONS.plus + "</span>" +
+      '<span class="recent-text"><span class="name">' + esc(name) + " " + recentBadgeHtml(r) + '</span><span class="meta">' + meta + "</span></span></button>" +
+      (canEdit ? '<button type="button" class="recent-btn" data-act="recent-edit" data-key="' + esc(r.key) + '" aria-label="Change portion for ' + esc(name) + '">' + ICONS.edit + "</button>" : "") +
+      '<button type="button" class="recent-btn" data-act="recent-hide" data-key="' + esc(r.key) + '" aria-label="Remove ' + esc(name) + ' from recents">' + ICONS.x + "</button>" +
+      "</div>"
+    );
+  }
+  function recentSectionHtml(q, opts) {
+    const o = opts || {};
+    const rows = recentFoods(q, o.limit || 20);
+    if (!rows.length) {
+      if (o.showEmpty) return '<div class="recent-list"><p class="muted" style="padding:12px">' + (q ? "No recent foods match." : "Foods you log show up here for one-tap logging.") + "</p></div>";
+      return "";
+    }
+    let html = '<div class="recent-list" id="recent-list">';
+    html += '<div class="recent-head"><h3>Recent</h3><span class="tiny muted">Tap to log again · ' + ICONS.edit + " to change portion</span></div>";
+    html += rows.map(recentRowHtml).join("");
+    html += "</div>";
+    return html;
+  }
+  function findRecent(key) {
+    return recentFoods("", 200).find((r) => r.key === key) || null;
+  }
+  function currentLogDay() {
+    return tab === "journal" ? journalCursor : dayISO;
+  }
+  function quickRelogRecent(key) {
+    const r = findRecent(key);
+    if (!r) return toast("That food isn’t in your recents anymore.");
+    const mealEl = document.getElementById("s-meal");
+    const inSheet = sheet && sheet.type === "log-food";
+    const meal = inSheet && mealEl ? mealEl.value : r.meal || "snack";
+    if (inSheet) sheet.meal = meal;
+    const day = currentLogDay();
+    const entry = window.PPRecents.cloneForRelog(r.entry, () => uid("e"), nowTime(), new Date().toISOString());
+    addEntry(day, meal, entry);
+    toast("Added " + displayName(r.name) + " to " + mealLabel(meal).toLowerCase() + ".", { day: day, meal: meal, id: entry.id });
+  }
+  function editRecent(key) {
+    const r = findRecent(key);
+    if (!r) return;
+    const mealEl = document.getElementById("s-meal");
+    const meal = sheet && sheet.type === "log-food" && mealEl ? mealEl.value : r.meal || "snack";
+    if (r.kind === "recipe") {
+      sheet = { type: "log-recipe", recipeId: r.recipeId, meal: meal, qty: r.servings || 1 };
+    } else if (r.food) {
+      sheet = { type: "log-amount", foodId: r.food.id, meal: meal, time: nowTime(), prefillGrams: r.grams };
+    } else if (r.grams) {
+      const g = Number(r.grams);
+      sheet = {
+        type: "log-amount",
+        foodId: null,
+        meal: meal,
+        time: nowTime(),
+        prefillGrams: g,
+        food: { id: r.foodId || "recent-" + r.key, name: r.name, kcal: (r.kcal / g) * 100, protein: (r.protein / g) * 100, carbs: (r.carbs / g) * 100, fat: (r.fat / g) * 100, portions: [] },
+      };
+    }
+    render();
+  }
+  function undoToastEntry() {
+    const u = toastUndo;
+    if (!u) return;
+    const d = state.logs[u.day];
+    if (d && Array.isArray(d[u.meal])) {
+      d[u.meal] = d[u.meal].filter((e) => e.id !== u.id);
+      saveState();
+    }
+    clearTimeout(toastTimer);
+    toastUndo = null;
+    toastMsg = "";
+    toast("Removed.");
+  }
+  function sheetFoodResultsHtml(q) {
+    let html = "";
+    if (foodsFilter === "recent") {
+      return recentSectionHtml(q, { showEmpty: true });
+    }
+    if (!(q || "").trim()) html += recentSectionHtml("", { limit: 20 });
+    const rows = searchFoods(q, 25);
+    if (html && rows.length) html += '<h3 class="tiny muted results-head">All foods</h3>';
+    html += rows.map((f) => foodRowHtml(f, "pick-food")).join("") || '<p class="muted">No local matches.</p>';
+    if ((q || "").trim().length >= 2) {
+      html += '<button type="button" class="btn btn-ghost btn-block" data-act="search-online" style="margin-top:8px">Search grocery stores online</button>';
+      if (foodsOnlineStatus) html += '<p class="muted">' + esc(foodsOnlineStatus) + "</p>";
+      if (foodsOnlineError) html += '<p class="note">' + esc(foodsOnlineError) + "</p>";
+    }
+    return html;
+  }
+
   /* ---------- Foods ---------- */
   function kindBadgeHtml(f) {
     const cat = window.PPCatalog;
@@ -1278,6 +1402,7 @@
     });
     // Custom foods sit with "Yours" but the Basic chip is for USDA basics; count customs in all only.
     const opts = [
+      ["recent", "Recent"],
       ["all", "All"],
       ["restaurant", "Restaurants"],
       ["grocery", "Grocery"],
@@ -1330,10 +1455,14 @@
   }
   function renderFoodResults(q) {
     if (!foodsReady && !(state.customFoods || []).length) {
-      return '<p class="muted" style="padding:12px">Still loading foods…</p>';
+      return recentSectionHtml(q, {}) + '<p class="muted" style="padding:12px">Still loading foods…</p>';
     }
-    const rows = searchFoods(q, 40);
+    if (foodsFilter === "recent") return recentSectionHtml(q, { showEmpty: true });
     let html = "";
+    const qEmpty = !(q || "").trim();
+    if (qEmpty) html += recentSectionHtml("", { limit: 20 });
+    const rows = searchFoods(q, 40);
+    if (html && rows.length) html += '<h3 class="tiny muted results-head">All foods</h3>';
     if (!rows.length) {
       html += '<p class="muted" style="padding:12px">No local matches. Try a shorter word, a brand name, or search online.</p>';
     } else {
@@ -1973,13 +2102,7 @@
     html += '<button type="button" class="icon-btn sm" data-act="open-barcode" aria-label="Scan or enter a barcode">' + ICONS.barcode + "</button></div>";
     html += filterChipsHtml();
     html += '<div id="sheet-results">';
-    const rows = searchFoods(q, 25);
-    html += rows.map((f) => foodRowHtml(f, "pick-food")).join("") || '<p class="muted">No local matches.</p>';
-    if ((q || "").trim().length >= 2) {
-      html += '<button type="button" class="btn btn-ghost btn-block" data-act="search-online" style="margin-top:8px">Search grocery stores online</button>';
-      if (foodsOnlineStatus) html += '<p class="muted">' + esc(foodsOnlineStatus) + "</p>";
-      if (foodsOnlineError) html += '<p class="note">' + esc(foodsOnlineError) + "</p>";
-    }
+    html += sheetFoodResultsHtml(q);
     html += "</div>";
     html += '<button class="btn btn-ghost btn-block" style="margin-top:8px" data-act="add-custom">Add a custom food</button>';
     return html;
@@ -2018,13 +2141,30 @@
     if (srcAmt) html += '<p class="tiny muted">' + srcAmt + "</p>";
     html += mealSelect(sheet.meal || "breakfast");
     html += '<label class="field">Portion<select id="s-portion">';
-    html += '<option value="100" data-grams="100">100 g</option>';
+    const pre = Number(sheet.prefillGrams) > 0 ? Number(sheet.prefillGrams) : 0;
+    let selIdx = portions.length ? 0 : -1;
+    let selCustom = false;
+    let sel100 = !portions.length;
+    if (pre) {
+      const hit = portions.findIndex((p) => Math.abs(Number(p.grams) - pre) < 0.05);
+      if (hit >= 0) selIdx = hit;
+      else if (Math.abs(pre - 100) < 0.05) {
+        selIdx = -1;
+        sel100 = true;
+      } else {
+        selIdx = -1;
+        sel100 = false;
+        selCustom = true;
+      }
+    }
+    html += '<option value="100" data-grams="100"' + (sel100 && !selCustom ? " selected" : "") + ">100 g</option>";
     portions.forEach((p, i) => {
-      html += '<option value="p' + i + '" data-grams="' + p.grams + '"' + (i === 0 ? " selected" : "") + ">" + esc(p.name) + " (" + fmtG(p.grams) + " g)</option>";
+      html += '<option value="p' + i + '" data-grams="' + p.grams + '"' + (i === selIdx ? " selected" : "") + ">" + esc(p.name) + " (" + fmtG(p.grams) + " g)</option>";
     });
-    html += '<option value="custom">Custom grams…</option></select></label>';
+    html += '<option value="custom"' + (selCustom ? " selected" : "") + ">Custom grams…</option></select></label>";
+    const gramsVal = pre || (portions[0] ? portions[0].grams : 100);
     html += '<div class="grid-2"><label class="field">Quantity<input id="s-qty" type="number" inputmode="decimal" value="1"></label>';
-    html += '<label class="field">Grams<input id="s-grams" type="number" inputmode="decimal" value="' + (portions[0] ? portions[0].grams : 100) + '"></label></div>';
+    html += '<label class="field">Grams<input id="s-grams" type="number" inputmode="decimal" value="' + gramsVal + '"></label></div>';
     html += '<label class="field">Time<input id="s-time" type="time" value="' + (sheet.time || nowTime()) + '"></label>';
     html += '<label class="field">Note <span class="muted">(optional)</span><input id="s-note" type="text" placeholder="Tasted great, leftovers…"></label>';
     html += '<div class="card" id="s-preview" style="margin:12px 0"></div>';
@@ -2165,7 +2305,7 @@
     let html = "<h2>Log " + esc(r.name) + "</h2>";
     html += '<p class="hint">' + fmtKcal(per.kcal) + " kcal per serving</p>";
     html += mealSelect(sheet.meal || "lunch");
-    html += '<label class="field">Servings<input id="s-qty" type="number" inputmode="decimal" value="1"></label>';
+    html += '<label class="field">Servings<input id="s-qty" type="number" inputmode="decimal" value="' + esc(sheet.qty || 1) + '"></label>';
     html += '<label class="field">Time<input id="s-time" type="time" value="' + nowTime() + '"></label>';
     html += '<label class="field">Note <span class="muted">(optional)</span><input id="s-note" type="text"></label>';
     html += '<button class="btn btn-primary btn-block" data-act="confirm-log-recipe">Add to journal</button>';
@@ -2516,14 +2656,7 @@
         const box = document.getElementById("sheet-results");
         if (box && sheet && sheet.type === "log-food") {
           const qv = sheetQ.value;
-          const rows = searchFoods(qv, 25);
-          let html = rows.map((f) => foodRowHtml(f, "pick-food")).join("") || '<p class="muted">No local matches.</p>';
-          if ((qv || "").trim().length >= 2) {
-            html += '<button type="button" class="btn btn-ghost btn-block" data-act="search-online" style="margin-top:8px">Search grocery stores online</button>';
-            if (foodsOnlineStatus) html += '<p class="muted">' + esc(foodsOnlineStatus) + "</p>";
-            if (foodsOnlineError) html += '<p class="note">' + esc(foodsOnlineError) + "</p>";
-          }
-          box.innerHTML = html;
+          box.innerHTML = sheetFoodResultsHtml(qv);
           bindResults(box);
           scheduleOnlineSearch(qv);
         } else if (box && sheet && sheet.type === "recipe-edit") {
@@ -2679,8 +2812,8 @@
   }
   function updateLogPreview() {
     const box = document.getElementById("s-preview");
-    if (!box || !sheet || !sheet.foodId) return;
-    const f = findFood(sheet.foodId);
+    if (!box || !sheet || (!sheet.foodId && !sheet.food)) return;
+    const f = findFood(sheet.foodId) || sheet.food;
     if (!f) return;
     const g = Number((document.getElementById("s-grams") || {}).value || 0);
     const m = C.macrosForGrams(f, g);
@@ -2999,6 +3132,29 @@
       render();
       return;
     }
+    if (act === "recent-log") {
+      quickRelogRecent(el.getAttribute("data-key"));
+      return;
+    }
+    if (act === "recent-edit") {
+      editRecent(el.getAttribute("data-key"));
+      return;
+    }
+    if (act === "recent-hide") {
+      const key = el.getAttribute("data-key");
+      if (sheet && sheet.type === "log-food") {
+        const mealEl = document.getElementById("s-meal");
+        if (mealEl) sheet.meal = mealEl.value;
+      }
+      window.PPRecents.hide(state, key, new Date().toISOString());
+      saveState();
+      toast("Removed from recents.");
+      return;
+    }
+    if (act === "toast-undo") {
+      undoToastEntry();
+      return;
+    }
     if (act === "pick-food") {
       const mealEl = document.getElementById("s-meal");
       const meal = mealEl ? mealEl.value : (sheet && sheet.meal) || "breakfast";
@@ -3007,7 +3163,7 @@
       return;
     }
     if (act === "confirm-log") {
-      const f = findFood(sheet.foodId);
+      const f = findFood(sheet.foodId) || sheet.food;
       const grams = Number(document.getElementById("s-grams").value || 0);
       if (!f || !grams) return toast("Add a portion amount first.");
       const meal = document.getElementById("s-meal").value;
@@ -3732,6 +3888,7 @@
     addEntry,
     entryFromFood,
     findFood,
+    recentFoods: (q, limit) => recentFoods(q || "", limit || 20),
     foods: () => foods,
     setTab: (t) => {
       tab = t;

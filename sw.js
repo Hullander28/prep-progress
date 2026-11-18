@@ -1,5 +1,5 @@
 /* Prep & Progress service worker — cache-first app shell for offline use. */
-const VERSION = "pp-v6-2026-11-12-ios-scan";
+const VERSION = "pp-v7-2026-11-18-recents";
 const ASSETS = [
   "./",
   "./index.html",
@@ -10,6 +10,7 @@ const ASSETS = [
   "./js/sync.js",
   "./js/catalog.js",
   "./js/scan.js",
+  "./js/recents.js",
   "./js/app.js",
   "./manifest.webmanifest",
   "./data/foods.json",
